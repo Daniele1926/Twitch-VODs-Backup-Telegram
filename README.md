@@ -1,5 +1,6 @@
 # Twitch-VODs-Backup-Telegram
-A complete python bot for continuos backup from Twitch to Telegram channel
+A complete python bot for continuos backup from Twitch to Telegram channel.
+This code can also download sub-only VODs by providing your Twitch cookies in cookies.txt (netscape format)
 
 INSTALL
 
