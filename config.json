@@ -1,0 +1,44 @@
+{
+    "TWITCH_CLIENT_ID": "TWITCHBOTCLIENTID",
+    "TWITCH_CLIENT_SECRET": "TWITCHBOTCLIENTSECRET",
+    "TWITCH_CHANNEL_ID": "TWITCHTARGETCHANNELID",
+    "USER_AUTH_TOKEN": "TOKENTWITCH",
+    "TELEGRAM_CHANNEL_ID": "TELEGRAMCHANNELID(STARTS WITH -100)",
+    "TELEGRAM_API_ID": "USERBOTAPIID",
+    "TELEGRAM_API_HASH": "USERBOTAPIHASH",
+    "TELEGRAM_PHONE_NUMBER": "YOURTELEGRAMPHONE",
+    "DATABASE_NAME": "vods.db",
+
+    "VOD_SETTINGS": {
+    "MIN_RETRY_DELAY": 300,
+    "MAX_RETRY_DELAY": 86400,
+    "AUTO_CHECK_VODS": true,
+    "PHRASE_IN_THUMBNAIL_URL": "404_processing",
+    "VIDEO_QUALITY_VOD": ["720p30", "720p", "720p60", "1080p", "best"]
+    },
+
+    "SPLIT_SETTINGS": {
+    "MAX_FILE_SIZE_MB": 2048,
+    "MIN_FILE_SIZE_MB": 1900,
+    "MAX_RETRIES_SPLIT": 20,
+    "MERGE_THRESHOLD_MB": 100,
+    "MID_TARGET_RATIO": 0.85,
+    "UPLOAD_DELAY": 3,
+    "PROCESSING_INTERVAL": 1800,
+    "DROP_SEGMENT_THRESHOLD_SEC": 15.0
+    },
+    "VOD_ORDERING": {
+        "field": "created_at",
+        "order": "desc"
+    },
+    "Commenti": {
+        "User Auth Token": "Auth token preso dai cookie di Twitch da un profilo abbonato o con accesso ai VOD",
+        "Max/Min size GB": "Max e min dimensione che devono avere i segmenti prima dell'upload",
+        "Max retries split": "Numero massimo di tentativi di split prima di dare errore",
+        "Merge threshold GB": "Limite massimo a cui tenta di fare il merge tra ultimo e penultimo segmento",
+        "size tolerance": "se per esempio durante lo split hai un valore, in percentuale, poco sopra o sotto delle soglie, lo accetta lo stesso",
+        "processing interval": "ogni quanto tempo deve rifare i check e tutto",
+        "drop_segment_threshold": "secondi minimi che deve avere l'ultimo segmento prima di essere droppato",
+        "vod ordering": "puoi scegliere tra duration o created_at , desc o asc (crescente e decrescente"
+        }
+}
