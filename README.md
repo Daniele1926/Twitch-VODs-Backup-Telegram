@@ -2,6 +2,16 @@
 A complete python bot for continuos backup from Twitch to Telegram channel.
 This code can also download sub-only VODs by providing your Twitch cookies in cookies.txt (netscape format)
 
+FEATURES:
+
+- Automatic fetch new vods and live vods
+- Automatic download new VODs
+- Support for only subs VODs
+- Support for NVENC
+- SQL Database to track failed VODs, completed VODs, currently in live VODs and retries
+- Smart automatic split for VODs larger than 2/4GB (depends on Telegram limits)
+- Telegram caption with thumbnail, streaming support, VOD title, date and part
+
 INSTALL
 
 1. Download repository
@@ -12,12 +22,15 @@ INSTALL
 RUN
 
 ON WINDOWS: 
-Download FFmpeg and FFprobe .exe, put in the folder and just double click start.bat
+
+- Download FFmpeg and FFprobe .exe, put in the folder and just double click start.bat
+
 
 ON LINUX: 
-Go to directory and launch with "python3 __main__.py"
+
+- Go to directory and launch with "python3 __main__.py"
 
 
 
 DISCLAIMER: 
-This tool is 99% made by DeepSeek and ChatGPT. I'm not a developer.
+- This tool is 99% made by DeepSeek and ChatGPT. I'm not a developer.
