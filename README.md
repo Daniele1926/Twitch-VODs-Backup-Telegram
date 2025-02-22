@@ -11,13 +11,13 @@ INSTALL
 
 RUN
 
-ON WINDOWS
+ON WINDOWS: 
 Download FFmpeg and FFprobe .exe, put in the folder and just double click start.bat
 
-ON LINUX
+ON LINUX: 
 Go to directory and launch with "python3 __main__.py"
 
 
 
-DISCLAIMER
+DISCLAIMER: 
 This tool is 99% made by DeepSeek and ChatGPT. I'm not a developer.
