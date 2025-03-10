@@ -8,7 +8,6 @@ FEATURES:
 - Automatic fetch new vods and tracking live vods
 - Automatic download new VODs
 - Support for only subs VODs
-- Support for NVENC
 - SQL Database to track failed VODs, completed VODs, currently in live VODs and retries
 - Smart automatic split for VODs larger than 2/4GB (depends on Telegram limits)
 - Telegram caption with thumbnail, streaming support, VOD title, date and part
