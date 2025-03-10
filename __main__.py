@@ -844,103 +844,116 @@ async def get_segment_duration(segment_path):
 async def fix_metadata(input_file):
     logger.info(f"Fixing metadata per: {os.path.basename(input_file)}")
     temp_file = input_file.replace(".mp4", "_fixed.mp4")
-    
+
     cmd = [
         "ffmpeg",
-        "-y",
+        "-y", 
+        "-loglevel", "info",  # Medio tra performance e debugging
+        "-probesize", "50M",     # Sufficiente per il probing iniziale
+        "-analyzeduration", "50M", # Analisi minima ma sicura
         "-i", input_file,
         "-c", "copy",
-        "-movflags", "+faststart",
-        "-map_metadata", "0",
-        "-progress", "pipe:1",
+        "-movflags", "+faststart", 
+        "-max_muxing_queue_size", "9999",
+        "-ignore_unknown",
+        "-fflags", "+nobuffer",
         "-f", "mp4",
+        "-progress", "pipe:1",
+        "-nostdin",
         temp_file
     ]
-    
+
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT
     )
-    
-    duration_pattern = re.compile(r"Duration: (\d+):(\d+):(\d+\.\d+)")
-    time_pattern = re.compile(r"time=(\d+):(\d+):(\d+\.\d+)")
-    
+
+    duration_pattern = re.compile(r"Duration:\s*(\d+):(\d+):(\d+\.\d+)")
+    out_time_pattern = re.compile(r"out_time=(\d+):(\d+):(\d+\.\d+)")
+
     progress_bar = tqdm(
-        total=100, 
-        desc="Fixing metadata", 
-        unit="%", 
-        dynamic_ncols=True, 
-        leave=False,
-        ascii=True
+        total=100,
+        desc="Elaborazione video",
+        unit="%",
+        ascii=True,
+        bar_format="{l_bar}{bar}| {n:.1f}% [{elapsed}<{remaining}]",
+        leave=False
     )
-    
-    async def read_stdout():
-        buffer = b""
+
+    async def monitor_progress():
+        buffer = ""
         duration = None
-        last_update = 0
         last_progress = 0.0
-        update_interval = 0.1  # Update every 100ms
-        
-        while True:
-            chunk = await proc.stdout.read(4096)  # Read in larger chunks
-            if not chunk:
-                break
-            buffer += chunk
-            
-            # Decode buffer and split lines manually
-            text = buffer.decode(errors='ignore')
-            
-            # Check for duration
-            if not duration:
-                dur_match = duration_pattern.search(text)
-                if dur_match:
-                    hours, mins, secs = map(float, dur_match.groups())
-                    duration = hours * 3600 + mins * 60 + secs
-                    progress_bar.reset(total=100)
-            
-            # Find all time matches in the current buffer
-            time_matches = list(time_pattern.finditer(text))
-            if time_matches:
-                last_match = time_matches[-1]
-                hours, mins, secs = map(float, last_match.groups())
-                current_time = hours * 3600 + mins * 60 + secs
+
+        try:
+            while True:
+                chunk = await proc.stdout.read(4096)
+                if not chunk:
+                    break
+                buffer += chunk.decode(errors='ignore')
                 
-                if duration:
-                    progress = (current_time / duration) * 100
-                    delta = progress - last_progress
-                    if delta > 0:
-                        progress_bar.update(delta)
-                        last_progress = progress
+                while "\n" in buffer:
+                    line, buffer = buffer.split("\n", 1)
                     
-                    # Throttle refresh rate
-                    now = time.time()
-                    if now - last_update > update_interval:
-                        progress_bar.refresh()
-                        last_update = now
-            
-            # Handle incomplete lines by keeping remaining buffer
-            last_newline = text.rfind('\n')
-            if last_newline != -1:
-                buffer = text[last_newline+1:].encode()
-            else:
-                buffer = buffer[-4096:]  # Keep last 4KB to avoid memory issues
-    
-    stdout_reader = asyncio.create_task(read_stdout())
-    await proc.wait()
-    await stdout_reader
-    
-    progress_bar.n = 100
-    progress_bar.refresh()
-    progress_bar.close()
-    
+                    # Debug logging per output FFmpeg
+                    logger.debug(f"FFmpeg: {line.strip()}")
+                    
+                    # Estrazione durata
+                    if not duration:
+                        match_duration = duration_pattern.search(line)
+                        if match_duration:
+                            h, m, s = map(float, match_duration.groups())
+                            duration = h * 3600 + m * 60 + s
+                            progress_bar.reset(total=100)
+                            logger.debug(f"Durata rilevata: {duration}s")
+                    
+                    # Calcolo progresso
+                    match_progress = out_time_pattern.search(line)
+                    if match_progress and duration:
+                        h, m, s = map(float, match_progress.groups())
+                        current_time = h * 3600 + m * 60 + s
+                        progress = (current_time / duration) * 100
+                        progress_bar.update(progress - last_progress)
+                        last_progress = progress
+                        logger.debug(f"Progresso: {progress:.1f}%")
+
+        except Exception as e:
+            logger.error(f"Errore durante il monitoraggio: {str(e)}")
+            raise
+        finally:
+            # Aspetta la terminazione del processo in ogni caso
+            await proc.wait()
+            logger.debug(f"Processo terminato con codice: {proc.returncode}")
+
+            # Aggiornamento finale solo se completato con successo
+            if proc.returncode == 0:
+                progress_bar.n = 100
+                progress_bar.refresh()
+            progress_bar.close()
+
+    try:
+        await asyncio.wait_for(monitor_progress(), timeout=7200)
+    except asyncio.TimeoutError:
+        logger.error("Timeout superato (2 ore)")
+        proc.kill()
+        await proc.wait()
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
+        raise RuntimeError("Timeout di elaborazione")
+
+    # Controllo finale del returncode
     if proc.returncode != 0:
-        logger.error(f"Errore fix_metadata con codice {proc.returncode}")
-        raise RuntimeError(f"Errore fix_metadata con codice {proc.returncode}")
-    
+        error_log = f"FFmpeg fallito con codice {proc.returncode}"
+        logger.error(error_log)
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
+        raise RuntimeError(error_log)
+
+    # Sostituzione atomica del file
     os.replace(temp_file, input_file)
-    logger.info(f"Metadata fix completato per: {os.path.basename(input_file)}")
     return input_file
+
 
 
 # -------------------------------------------------------------------------------
@@ -1010,7 +1023,7 @@ async def calculate_adjustment(desired_size, actual_size):
     raw_adjustment = desired_size / actual_size
     # Limita l'aggiustamento per evitare oscillazioni
     raw_adjustment = desired_size / max(actual_size, 1)  # Evita divisione per zero
-    raw_adjustment = max(0.8, min(1.5, raw_adjustment))  # Range più stretto
+    raw_adjustment = max(0.5, min(3, raw_adjustment))  # Range più stretto
     damping = 0.6  # Valore fisso per maggiore stabilità
     adjustment = 1 + damping * (raw_adjustment - 1)
     logger.info(f"Adjustment: {adjustment:.3f} (raw: {raw_adjustment:.3f})")
@@ -1164,28 +1177,6 @@ async def split_video(input_path):
         raise ValueError("Il file di input è vuoto")
 
     # Verifica encoder disponibile e imposta parametri
-    nvenc_available = await check_encoder_available("h264_nvenc")
-    encoder_params = []
-    if nvenc_available:
-        encoder_params = [
-            "-c:v", "h264_nvenc",
-            "-preset", "fast",
-            "-rc", "vbr",
-            "-b:v", "2500k",
-            "-maxrate", "3000k",
-            "-bufsize", "5000k",
-            "-cq", "24",
-        ]
-        logger.info("Trovato encoder hardware h264_nvenc")
-    else:
-        encoder_params = [
-            "-c:v", "libx264",
-            "-preset", "fast",
-            "-crf", "23",
-            "-maxrate", "3000k",
-            "-bufsize", "5000k",
-        ]
-        logger.warning("Encoder hardware non trovato, fallback a libx264")
 
     split_config = config["SPLIT_SETTINGS"]
     MAX_FILE_SIZE = split_config["MAX_FILE_SIZE_MB"] * 1000**2
@@ -1244,26 +1235,47 @@ async def split_video(input_path):
             cmd = [
                 "ffmpeg",
                 "-hide_banner",
-                "-loglevel", "info",
-                "-stats_period", "1",
-                "-i", input_path,
-                "-ss", str(start),
-                "-t", str(target_duration),
-                "-vf", "fps=30",
-                *encoder_params,  # Parametri encoder dinamici
-                "-c:a", "copy",
-                "-avoid_negative_ts", "1",
-                "-movflags", "+faststart",
-                "-f", "mp4",
                 "-y",
+                
+                # Input options (prima del file di input)
+                "-ss", str(start),
+                "-seek_timestamp", "1",
+                "-probesize", "50M",
+                "-analyzeduration", "50M",
+                "-ignore_unknown",     # Spostato qui
+                "-rtbufsize", "1024M",
+                "-avioflags", "direct",
+                "-i", input_path,
+
+                # Output options (prima del file di output)
+                "-t", str(target_duration),
+                "-c:v", "libx264",
+                "-preset", "ultrafast",
+                "-b:v", f"{int(dynamic_bitrate//1000)}k",
+                "-maxrate", f"{int(dynamic_bitrate//1000 * 1.5)}k",  # 1.5x il bitrate target
+                "-bufsize", f"{int(dynamic_bitrate//1000 * 2)}k",     # 2x il maxrate
+                "-profile:v", "main",
+                "-pix_fmt", "yuv420p",
+                "-x264-params", "keyint=60:min-keyint=30:bframes=0:ref=1:no-deblock=1:threads=0",
+                "-c:a", "aac",
+                "-b:a", "128k",
+                "-ar", "44100",
+                "-ac", "2",
+                "-f", "mp4",
+                "-movflags", "frag_keyframe+faststart",
+                "-max_muxing_queue_size", "4096",
+                "-threads", "0",
+                "-reset_timestamps", "1",
+                "-max_error_rate", "1.0",
                 "-progress", "pipe:1",
+                "-nostdin",
                 out_file
             ]
 
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stderr=asyncio.subprocess.STDOUT
             )
 
             progress_pattern = re.compile(r"out_time_ms=(\d+)")
@@ -1304,7 +1316,7 @@ async def split_video(input_path):
             progress_task = asyncio.create_task(read_progress())
             
             try:
-                await asyncio.wait_for(proc.wait(), timeout=3600)
+                await asyncio.wait_for(proc.wait(), timeout=7200)
             except asyncio.TimeoutError:
                 logger.error("Timeout durante lo split del segmento")
                 proc.kill()
@@ -1450,7 +1462,7 @@ async def upload_segment(segment, vod, part_number, total_parts):
             """Verifica la presenza del flag faststart nei metadati"""
             cmd = [
                 "ffprobe",
-                "-loglevel", "error",
+                "-loglevel", "info",
                 "-show_entries", "format_tags=faststart",
                 "-of", "default=noprint_wrappers=1:nokey=1",
                 file_path
@@ -1458,7 +1470,7 @@ async def upload_segment(segment, vod, part_number, total_parts):
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stderr=asyncio.subprocess.STDOUT
             )
             stdout, _ = await proc.communicate()
             return "faststart" in stdout.decode().strip()
