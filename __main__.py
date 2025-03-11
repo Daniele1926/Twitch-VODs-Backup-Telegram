@@ -1010,26 +1010,6 @@ async def merge_segments(segments):
         return None
 
 # -------------------------------------------------------------------------------
-# FUNZIONE: calculate_adjustment
-# -------------------------------------------------------------------------------
-async def calculate_adjustment(desired_size, actual_size):
-    """
-    Calcola il fattore di aggiustamento per la durata target:
-      - raw_adjustment = desired_size / actual_size
-      - damping (smorzamento) limitato tra 0.3 e 0.9
-      - adjustment = 1 + damping * (raw_adjustment - 1)
-      Il valore finale è compreso tra 0.3 e 2.
-    """
-    raw_adjustment = desired_size / actual_size
-    # Limita l'aggiustamento per evitare oscillazioni
-    raw_adjustment = desired_size / max(actual_size, 1)  # Evita divisione per zero
-    raw_adjustment = max(0.5, min(3, raw_adjustment))  # Range più stretto
-    damping = 0.6  # Valore fisso per maggiore stabilità
-    adjustment = 1 + damping * (raw_adjustment - 1)
-    logger.info(f"Adjustment: {adjustment:.3f} (raw: {raw_adjustment:.3f})")
-    return adjustment
-
-# -------------------------------------------------------------------------------
 # FUNZIONE: process_pending_merge
 # -------------------------------------------------------------------------------
 async def process_pending_merge(pending, max_size, merge_threshold):
@@ -1162,11 +1142,6 @@ async def check_encoder_available(encoder_name):
         return False
 
 async def split_video(input_path):
-    """
-    Divide il video in segmenti rispettando MAX_SIZE e MIN_SIZE.
-    L'ultimo segmento può essere sotto MIN_SIZE, il merge viene effettuato
-    solo tra ultimo e penultimo se necessario e possibile.
-    """
     logger.info(f"Starting video split for: {input_path}")
 
     if not os.path.exists(input_path):
@@ -1175,8 +1150,6 @@ async def split_video(input_path):
     original_size = os.path.getsize(input_path)
     if original_size == 0:
         raise ValueError("Il file di input è vuoto")
-
-    # Verifica encoder disponibile e imposta parametri
 
     split_config = config["SPLIT_SETTINGS"]
     MAX_FILE_SIZE = split_config["MAX_FILE_SIZE_MB"] * 1000**2
@@ -1213,10 +1186,47 @@ async def split_video(input_path):
     segments = []
     current_start = 0.0
     part_number = 1
-    dynamic_bitrate = avg_bitrate
+    fixed_bitrate = avg_bitrate  # Bitrate rimane fisso
 
-    async def split_segment(start, target_duration, attempt):
-        nonlocal dynamic_bitrate, part_number
+    async def calculate_adjustment(actual_size):
+        """
+        Versione ottimizzata con:
+        - MID a 80% del range MIN-MAX
+        - Correzione finale garantita senza clamping
+        """
+        range_size = MAX_FILE_SIZE - MIN_FILE_SIZE
+        mid_size = MIN_FILE_SIZE + 0.80 * range_size  # 80% verso MAX
+
+        if MIN_FILE_SIZE <= actual_size <= MAX_FILE_SIZE:
+            return 1.0
+
+        # Calcolo safe_limit
+        if actual_size > MAX_FILE_SIZE:
+            safe_limit = MAX_FILE_SIZE * 0.99
+            target = mid_size
+        else:
+            safe_limit = MIN_FILE_SIZE * 1.01
+            target = mid_size
+
+        # Distanza normalizzata dall'85% (MID)
+        distance = abs(actual_size - mid_size) / range_size
+        distance = min(distance, 1.0)  # Clamp a 1.0
+
+        # Formula damping
+        damping = 0.3 + (0.5 * distance)
+        raw_adj = target / actual_size
+        adjustment = 1 + damping * (raw_adj - 1)
+
+        # Correzione finale obbligatoria
+        projected_size = actual_size * adjustment
+        if projected_size > MAX_FILE_SIZE or projected_size < MIN_FILE_SIZE:
+            adjustment = safe_limit / actual_size
+
+        return adjustment
+
+    # Modifica: aggiunta il parametro "is_last_segment"
+    async def split_segment(start, target_duration, attempt, is_last_segment):
+        nonlocal part_number
         if target_duration <= 0:
             raise ValueError("Durata target non valida")
 
@@ -1232,43 +1242,28 @@ async def split_video(input_path):
                 unit='s'
             )
 
+            # Configurazione FFmpeg con bitrate fisso
             cmd = [
                 "ffmpeg",
-                "-hide_banner",
                 "-y",
-                
-                # Input options (prima del file di input)
+                "-threads", "0",           # Auto-threading per decodifica
                 "-ss", str(start),
-                "-seek_timestamp", "1",
-                "-probesize", "50M",
-                "-analyzeduration", "50M",
-                "-ignore_unknown",     # Spostato qui
-                "-rtbufsize", "1024M",
-                "-avioflags", "direct",
                 "-i", input_path,
-
-                # Output options (prima del file di output)
                 "-t", str(target_duration),
-                "-c:v", "libx264",
-                "-preset", "ultrafast",
-                "-b:v", f"{int(dynamic_bitrate//1000)}k",
-                "-maxrate", f"{int(dynamic_bitrate//1000 * 1.5)}k",  # 1.5x il bitrate target
-                "-bufsize", f"{int(dynamic_bitrate//1000 * 2)}k",     # 2x il maxrate
+                "-c:v", "libx264",         # Cambiato da h264_nvenc a libx264
+                "-preset", "ultrafast",    # Settaggio molto veloce
                 "-profile:v", "main",
-                "-pix_fmt", "yuv420p",
-                "-x264-params", "keyint=60:min-keyint=30:bframes=0:ref=1:no-deblock=1:threads=0",
+                "-tune", "fastdecode",     # Impostazione per decodifica veloce
+                "-x264-params", "no-mbtree=1",  # Riduce la complessità per una compressione più veloce
+                "-b:v", f"{int(fixed_bitrate//1000)}k",
+                "-g", "60",
+                "-bf", "1",
                 "-c:a", "aac",
                 "-b:a", "128k",
-                "-ar", "44100",
-                "-ac", "2",
                 "-f", "mp4",
-                "-movflags", "frag_keyframe+faststart",
-                "-max_muxing_queue_size", "4096",
-                "-threads", "0",
-                "-reset_timestamps", "1",
-                "-max_error_rate", "1.0",
-                "-progress", "pipe:1",
+                "-movflags", "+faststart",
                 "-nostdin",
+                "-progress", "pipe:1",
                 out_file
             ]
 
@@ -1332,57 +1327,84 @@ async def split_video(input_path):
                 error_msg = (await proc.stderr.read()).decode()
                 logger.error(f"Errore FFmpeg (code {proc.returncode}): {error_msg}")
                 raise RuntimeError(f"Errore FFmpeg (code {proc.returncode})")
-            try:
-                out_file = await fix_metadata(out_file)
-            except Exception as e:
-                logger.error(f"Errore durante il fix dei metadati per {out_file}: {str(e)}")
-                raise
 
+            out_file = await fix_metadata(out_file)
             await progress_manager.update_bar(bar_id, target_duration)
+            
             metadata_seg = await get_video_metadata(out_file)
             actual_duration = metadata_seg["duration"]
             actual_size = metadata_seg["file_size"]
 
+            logger.info(
+                f"Segment {part_number:03d} - "
+                f"Size: {actual_size/1e6:.2f}MB "
+                f"(MAX: {MAX_FILE_SIZE/1e6:.2f}MB, MIN: {MIN_FILE_SIZE/1e6:.2f}MB) "
+                f"Durata originale: {target_duration:.2f}s "
+                f"Durata effettiva: {actual_duration:.2f}s"
+            )
+
             if actual_duration < DROP_SEGMENT_THRESHOLD:
-                logger.warning(f"Segmento troppo corto ({actual_duration}s < {DROP_SEGMENT_THRESHOLD}s), eliminazione...")
+                logger.info(f"Segmento troppo corto ({actual_duration:.2f}s < {DROP_SEGMENT_THRESHOLD}s), eliminazione...")
                 os.remove(out_file)
                 return ("dropped", actual_duration)
 
-            if actual_duration > 0:
-                dynamic_bitrate = (actual_size * 8) / actual_duration
-            logger.info(f"New dynamic bitrate: {dynamic_bitrate/1000:.2f}kbps")
-
             if actual_size > MAX_FILE_SIZE:
-                adjustment = await calculate_adjustment(MID_FILE_SIZE, actual_size)
+                adjustment = await calculate_adjustment(actual_size)
                 new_duration = target_duration * adjustment
-                logger.info(f"Segmento troppo grande ({actual_size/1e6:.2f}MB), nuova durata target: {new_duration:.1f}s")
+                reduction_percent = (1 - adjustment) * 100
+                
+                # Controllo integrità logica
+                if adjustment >= 1:
+                    logger.error("ERRORE LOGICO: Tentativo di riduzione con adjustment >=1")
+                    raise ValueError("Fattore di aggiustamento non valido per riduzione")
+                
+                logger.info(
+                    f"Riduzione durata del {reduction_percent:.1f}% "
+                    f"Nuova durata target: {new_duration:.2f}s "
+                    f"(Originale: {target_duration:.2f}s)"
+                )
                 os.remove(out_file)
                 return ("retry", new_duration, attempt + 1)
 
-            if actual_size < MIN_FILE_SIZE and (total_duration - (start + actual_duration)) > DROP_SEGMENT_THRESHOLD:
-                adjustment = await calculate_adjustment(MID_FILE_SIZE, actual_size)
-                new_duration = min(target_duration * adjustment, total_duration - start)
-                logger.info(f"Segmento troppo piccolo ({actual_size/1e6:.2f}MB), nuova durata target: {new_duration:.1f}s")
-                if abs(new_duration - target_duration) < 1.0:
+            # Modifica: se il segmento è l'ultimo, accettarlo anche se inferiore a MIN_FILE_SIZE
+            elif actual_size < MIN_FILE_SIZE:
+                if is_last_segment:
+                    logger.info(f"Ultimo segmento, accettato anche se inferiore a MIN_FILE_SIZE: {actual_size/1e6:.2f}MB")
                     return ("success", out_file, actual_duration)
-                else:
-                    os.remove(out_file)
-                    return ("retry", new_duration, attempt + 1)
+                
+                adjustment = await calculate_adjustment(actual_size)
+                new_duration = min(target_duration * adjustment, total_duration - start)
+                increase_percent = (adjustment - 1) * 100
+                
+                # Controllo integrità logica
+                if adjustment <= 1:
+                    logger.error("ERRORE LOGICO: Tentativo di espansione con adjustment <=1")
+                    raise ValueError("Fattore di aggiustamento non valido per espansione")
+                
+                logger.info(
+                    f"Espansione durata del {increase_percent:.1f}% "
+                    f"Nuova durata target: {new_duration:.2f}s "
+                    f"(Originale: {target_duration:.2f}s)"
+                )
+                os.remove(out_file)
+                return ("retry", new_duration, attempt + 1)
 
-            logger.info(f"Segmento {part_number:03d} completato in {time.time() - start_time:.2f}s")
-            logger.info(f"Durata: {actual_duration:.1f}s - Dimensione: {actual_size/1e6:.2f}MB")
-            
-            return ("success", out_file, actual_duration)
+            else:
+                logger.info(
+                    f"Segmento {part_number:03d} valido! "
+                    f"Dimensione: {actual_size/1e6:.2f}MB "
+                    f"Durata: {actual_duration:.2f}s"
+                )
+                return ("success", out_file, actual_duration)
 
         except Exception as e:
-            logger.error(f"Errore durante lo split: {str(e)}")
             if os.path.exists(out_file):
                 os.remove(out_file)
             raise
         finally:
             await progress_manager.close_bar(bar_id)
+            logger.info(f"Tempo totale segmento {part_number:03d}: {time.time() - start_time:.2f}s")
 
-    # Resto del codice invariato...
     while current_start < total_duration - 1:
         remaining_duration = total_duration - current_start
         
@@ -1392,18 +1414,24 @@ async def split_video(input_path):
 
         logger.info(f"Processing segment {part_number} starting at {current_start:.2f}s")
         
-        target_duration = (MID_FILE_SIZE * 8) / dynamic_bitrate
+        # Calcola la durata target basata sul bitrate fisso
+        target_duration = (MID_FILE_SIZE * 8) / fixed_bitrate
         target_duration = min(
             target_duration,
             remaining_duration,
             max(remaining_duration - DROP_SEGMENT_THRESHOLD, DROP_SEGMENT_THRESHOLD)
         )
+        # Modifica: definizione del flag per ultimo segmento
+        TOLERANCE_SEC = 2.0  # Tolleranza bidirezionale
+
+        is_last_segment = abs((current_start + target_duration) - total_duration) <= TOLERANCE_SEC
+
 
         attempt = 1
         while attempt <= MAX_RETRIES:
             logger.info(f"Tentativo {attempt}/{MAX_RETRIES} per parte {part_number:03d}")
             try:
-                result = await split_segment(current_start, target_duration, attempt)
+                result = await split_segment(current_start, target_duration, attempt, is_last_segment)
             except asyncio.TimeoutError:
                 if attempt >= MAX_RETRIES:
                     raise RuntimeError(f"Timeout dopo {MAX_RETRIES} tentativi")
@@ -1438,16 +1466,15 @@ async def split_video(input_path):
 
     final_segments = await optimize_segments(segments, MAX_FILE_SIZE, MERGE_THRESHOLD, MIN_FILE_SIZE)
     
-    valid_segments = []
+    # Validazione finale
     for seg in final_segments:
         seg_size = os.path.getsize(seg)
         if seg_size > MAX_FILE_SIZE:
             logger.error(f"ERRORE: Segmento {os.path.basename(seg)} supera MAX_SIZE ({seg_size/1e6:.2f}MB)")
             raise ValueError("Dimensione segmento non conforme dopo l'ottimizzazione")
-        valid_segments.append(seg)
     
-    logger.info(f"Splitting completato con {len(valid_segments)} segmenti validi")
-    return valid_segments
+    logger.info(f"Splitting completato con {len(final_segments)} segmenti validi")
+    return final_segments
 
 # -------------------------------------------------------------------------------
 # FUNZIONE: upload_segment
