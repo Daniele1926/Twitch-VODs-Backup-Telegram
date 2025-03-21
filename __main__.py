@@ -842,117 +842,132 @@ async def get_segment_duration(segment_path):
 # FUNZIONE: fix_metadata
 # -------------------------------------------------------------------------------
 async def fix_metadata(input_file):
-    logger.info(f"Fixing metadata per: {os.path.basename(input_file)}")
-    temp_file = input_file.replace(".mp4", "_fixed.mp4")
-
-    cmd = [
-        "ffmpeg",
-        "-y", 
-        "-loglevel", "info",  # Medio tra performance e debugging
-        "-probesize", "50M",     # Sufficiente per il probing iniziale
-        "-analyzeduration", "50M", # Analisi minima ma sicura
-        "-i", input_file,
-        "-c", "copy",
-        "-movflags", "+faststart", 
-        "-max_muxing_queue_size", "9999",
-        "-ignore_unknown",
-        "-fflags", "+nobuffer",
-        "-f", "mp4",
-        "-progress", "pipe:1",
-        "-nostdin",
-        temp_file
-    ]
-
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT
-    )
-
-    duration_pattern = re.compile(r"Duration:\s*(\d+):(\d+):(\d+\.\d+)")
-    out_time_pattern = re.compile(r"out_time=(\d+):(\d+):(\d+\.\d+)")
-
-    progress_bar = tqdm(
-        total=100,
-        desc="Elaborazione video",
-        unit="%",
-        ascii=True,
-        bar_format="{l_bar}{bar}| {n:.1f}% [{elapsed}<{remaining}]",
-        leave=False
-    )
-
-    async def monitor_progress():
-        buffer = ""
-        duration = None
-        last_progress = 0.0
-
-        try:
-            while True:
-                chunk = await proc.stdout.read(4096)
-                if not chunk:
-                    break
-                buffer += chunk.decode(errors='ignore')
-                
-                while "\n" in buffer:
-                    line, buffer = buffer.split("\n", 1)
-                    
-                    # Debug logging per output FFmpeg
-                    logger.debug(f"FFmpeg: {line.strip()}")
-                    
-                    # Estrazione durata
-                    if not duration:
-                        match_duration = duration_pattern.search(line)
-                        if match_duration:
-                            h, m, s = map(float, match_duration.groups())
-                            duration = h * 3600 + m * 60 + s
-                            progress_bar.reset(total=100)
-                            logger.debug(f"Durata rilevata: {duration}s")
-                    
-                    # Calcolo progresso
-                    match_progress = out_time_pattern.search(line)
-                    if match_progress and duration:
-                        h, m, s = map(float, match_progress.groups())
-                        current_time = h * 3600 + m * 60 + s
-                        progress = (current_time / duration) * 100
-                        progress_bar.update(progress - last_progress)
-                        last_progress = progress
-                        logger.debug(f"Progresso: {progress:.1f}%")
-
-        except Exception as e:
-            logger.error(f"Errore durante il monitoraggio: {str(e)}")
-            raise
-        finally:
-            # Aspetta la terminazione del processo in ogni caso
-            await proc.wait()
-            logger.debug(f"Processo terminato con codice: {proc.returncode}")
-
-            # Aggiornamento finale solo se completato con successo
-            if proc.returncode == 0:
-                progress_bar.n = 100
-                progress_bar.refresh()
-            progress_bar.close()
+    """Converte MKV in MP4 e ottimizza MP4 per lo streaming con gestione avanzata"""
+    logger.info(f"Elaborazione file: {os.path.basename(input_file)}")
+    
+    is_mkv = input_file.endswith('.mkv')
+    temp_file = os.path.join(tempfile.gettempdir(), os.path.basename(output_file))
+    output_file = input_file.replace('.mkv', '.mp4') if is_mkv else input_file
 
     try:
-        await asyncio.wait_for(monitor_progress(), timeout=7200)
-    except asyncio.TimeoutError:
-        logger.error("Timeout superato (2 ore)")
-        proc.kill()
-        await proc.wait()
+        # Costruzione comando FFmpeg ottimizzato
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-loglevel", "info",
+            "-i", input_file,
+            "-c:v", "copy",               # Nessuna riconversione video
+            "-movflags", "+faststart",     # MOOV atom all'inizio
+            "-map_metadata", "0",          # Mantieni metadati
+            "-dn",                        # Disabilita data networks
+            "-progress", "pipe:1",
+            temp_file                      # Output su file temporaneo
+        ]
+
+        # Conversione audio solo per MKV con parametri moderni
+        if is_mkv:
+            cmd += ["-c:a", "aac", "-b:a", "192k"]  # Rimossa opzione 'strict'
+
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT
+        )
+
+        # Regex migliorate per parsing output
+        duration_pattern = re.compile(r"Duration:\s*(\d+):(\d+):(\d+\.\d+)")
+        out_time_pattern = re.compile(r"out_time=(\d+):(\d+):(\d+\.\d+)")
+        error_pattern = re.compile(r"error|failed", re.IGNORECASE)
+
+        progress_bar = tqdm(
+            total=100,
+            desc="Elaborazione video",
+            unit="%",
+            ascii=True,
+            bar_format="{l_bar}{bar}| {n:.1f}% [{elapsed}<{remaining}]",
+            leave=False,
+            colour="GREEN"
+        )
+
+        async def monitor_progress():
+            buffer = ""
+            duration = None
+            last_progress = 0.0
+
+            try:
+                while True:
+                    chunk = await proc.stdout.read(4096)
+                    if not chunk:
+                        break
+                    buffer += chunk.decode(errors='ignore')
+                    
+                    # Controllo errori
+                    if error_pattern.search(buffer):
+                        raise RuntimeError("Errore rilevato in output FFmpeg")
+                    
+                    # Processa linea per linea
+                    while "\n" in buffer:
+                        line, buffer = buffer.split("\n", 1)
+                        line = line.strip()
+                        
+                        logger.debug(f"FFmpeg: {line}")
+                        
+                        # Estrazione durata
+                        if not duration:
+                            match = duration_pattern.search(line)
+                            if match:
+                                h, m, s = map(float, match.groups())
+                                duration = h * 3600 + m * 60 + s
+                                progress_bar.reset(total=100)
+                                logger.info(f"Durata totale: {duration:.2f}s")
+                        
+                        # Calcolo progresso
+                        match = out_time_pattern.search(line)
+                        if match and duration:
+                            h, m, s = map(float, match.groups())
+                            current_time = h * 3600 + m * 60 + s
+                            progress = (current_time / duration) * 100
+                            progress_bar.update(progress - last_progress)
+                            last_progress = progress
+
+            except Exception as e:
+                logger.error(f"Errore durante il monitoraggio: {str(e)}")
+                raise
+            finally:
+                await proc.wait()
+                progress_bar.close()
+
+                # Controllo finale dello stato
+                if proc.returncode != 0:
+                    raise RuntimeError(f"FFmpeg exited with code {proc.returncode}")
+
+        # Avvia monitoraggio con timeout
+        try:
+            await asyncio.wait_for(monitor_progress(), timeout=7200)
+        except asyncio.TimeoutError:
+            logger.error("Timeout superato (2 ore)")
+            proc.kill()
+            raise RuntimeError("Timeout di elaborazione")
+        
+        # Rinomina file temporaneo
+        os.rename(temp_file, output_file)
+        logger.info(f"File ottimizzato creato: {output_file}")
+
+        # Pulizia MKV originale solo se conversione riuscita
+        if is_mkv and os.path.exists(input_file):
+            os.remove(input_file)
+            logger.info(f"Rimosso file MKV originale: {input_file}")
+
+        return output_file
+
+    except Exception as e:
+        # Pulizia file temporanei in caso di errore
         if os.path.exists(temp_file):
             os.remove(temp_file)
-        raise RuntimeError("Timeout di elaborazione")
-
-    # Controllo finale del returncode
-    if proc.returncode != 0:
-        error_log = f"FFmpeg fallito con codice {proc.returncode}"
-        logger.error(error_log)
-        if os.path.exists(temp_file):
-            os.remove(temp_file)
-        raise RuntimeError(error_log)
-
-    # Sostituzione atomica del file
-    os.replace(temp_file, input_file)
-    return input_file
+        if os.path.exists(output_file):
+            os.remove(output_file)
+        logger.error(f"Errore durante l'elaborazione: {str(e)}")
+        raise
 
 
 
@@ -1142,7 +1157,19 @@ async def check_encoder_available(encoder_name):
         return False
 
 async def split_video(input_path):
+    """Gestione formati prima dello split"""
+    # Conversione preliminare per MKV
+    if input_path.endswith('.mkv'):
+        intermediate_path = input_path.replace('.mkv', '_temp.mp4')
+        logger.info(f"Conversione MKV -> MP4: {intermediate_path}")
+        await fix_metadata(input_path)
+        input_path = intermediate_path
     logger.info(f"Starting video split for: {input_path}")
+
+    # Costanti per la gestione avanzata degli ultimi segmenti
+    LAST_SEGMENT_TOLERANCE = 30  # ±30 secondi di tolleranza
+    MIN_LAST_SEGMENT_DURATION = 30  # Durata minima per l'ultimo segmento
+    MERGE_LAST_SEGMENTS = True  # Abilita merge automatico finale
 
     if not os.path.exists(input_path):
         raise FileNotFoundError(f"Input file non trovato: {input_path}")
@@ -1156,7 +1183,7 @@ async def split_video(input_path):
     MIN_FILE_SIZE = split_config["MIN_FILE_SIZE_MB"] * 1000**2
     MERGE_THRESHOLD = split_config["MERGE_THRESHOLD_MB"] * 1000**2
     MAX_RETRIES = split_config["MAX_RETRIES_SPLIT"]
-    MID_TARGET_RATIO = split_config.get("MID_TARGET_RATIO", 0.80)
+    MID_TARGET_RATIO = split_config.get("MID_TARGET_RATIO", 0.75)
     DROP_SEGMENT_THRESHOLD = split_config.get("DROP_SEGMENT_THRESHOLD_SEC", 30.0)
 
     logger.info(
@@ -1164,7 +1191,8 @@ async def split_video(input_path):
         f"Min file size: {MIN_FILE_SIZE/1000**2:.2f}MB\n"
         f"Merge threshold: {MERGE_THRESHOLD/1000**2:.2f}MB\n"
         f"Target ratio: {MID_TARGET_RATIO}\n"
-        f"Drop segment threshold: {DROP_SEGMENT_THRESHOLD}s"
+        f"Drop segment threshold: {DROP_SEGMENT_THRESHOLD}s\n"
+        f"Last segment tolerance: ±{LAST_SEGMENT_TOLERANCE}s"
     )
 
     if original_size <= MAX_FILE_SIZE:
@@ -1189,18 +1217,12 @@ async def split_video(input_path):
     fixed_bitrate = avg_bitrate  # Bitrate rimane fisso
 
     async def calculate_adjustment(actual_size):
-        """
-        Versione ottimizzata con:
-        - MID a 80% del range MIN-MAX
-        - Correzione finale garantita senza clamping
-        """
         range_size = MAX_FILE_SIZE - MIN_FILE_SIZE
-        mid_size = MIN_FILE_SIZE + 0.80 * range_size  # 80% verso MAX
+        mid_size = MID_FILE_SIZE
 
         if MIN_FILE_SIZE <= actual_size <= MAX_FILE_SIZE:
             return 1.0
 
-        # Calcolo safe_limit
         if actual_size > MAX_FILE_SIZE:
             safe_limit = MAX_FILE_SIZE * 0.99
             target = mid_size
@@ -1208,27 +1230,21 @@ async def split_video(input_path):
             safe_limit = MIN_FILE_SIZE * 1.01
             target = mid_size
 
-        # Distanza normalizzata dall'85% (MID)
         distance = abs(actual_size - mid_size) / range_size
-        distance = min(distance, 1.0)  # Clamp a 1.0
+        distance = min(distance, 1.0)
 
-        # Formula damping
         damping = 0.3 + (0.5 * distance)
         raw_adj = target / actual_size
         adjustment = 1 + damping * (raw_adj - 1)
 
-        # Correzione finale obbligatoria
         projected_size = actual_size * adjustment
         if projected_size > MAX_FILE_SIZE or projected_size < MIN_FILE_SIZE:
             adjustment = safe_limit / actual_size
 
         return adjustment
 
-    # Modifica: aggiunta il parametro "is_last_segment"
-    async def split_segment(start, target_duration, attempt, is_last_segment):
-        nonlocal part_number
-        if target_duration <= 0:
-            raise ValueError("Durata target non valida")
+    async def split_segment(start, target_duration, attempt, is_last_segment=False):
+        nonlocal part_number, total_duration
 
         out_file = output_pattern.replace("%03d", f"{part_number:03d}")
         bar_id = f"split_{part_number}"
@@ -1242,19 +1258,19 @@ async def split_video(input_path):
                 unit='s'
             )
 
-            # Configurazione FFmpeg con bitrate fisso
+# Sostituisci la sezione del comando ffmpeg nello split_segment con:
             cmd = [
                 "ffmpeg",
                 "-y",
-                "-threads", "0",           # Auto-threading per decodifica
+                "-threads", "0",
                 "-ss", str(start),
                 "-i", input_path,
                 "-t", str(target_duration),
-                "-c:v", "libx264",         # Cambiato da h264_nvenc a libx264
-                "-preset", "ultrafast",    # Settaggio molto veloce
+                "-c:v", "libx264",
+                "-preset", "veryfast",
                 "-profile:v", "main",
-                "-tune", "fastdecode",     # Impostazione per decodifica veloce
-                "-x264-params", "no-mbtree=1",  # Riduce la complessità per una compressione più veloce
+                "-tune", "zerolatency",
+                "-x264-params", "nal-hrd=cbr",
                 "-b:v", f"{int(fixed_bitrate//1000)}k",
                 "-g", "60",
                 "-bf", "1",
@@ -1270,12 +1286,15 @@ async def split_video(input_path):
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT
+                stderr=asyncio.subprocess.PIPE
             )
 
             progress_pattern = re.compile(r"out_time_ms=(\d+)")
             
             async def read_progress():
+                if proc.stdout is None:
+                    logger.error("Impossibile leggere stdout: processo non avviato correttamente.")
+                    return
                 buffer = b""
                 while True:
                     try:
@@ -1300,7 +1319,7 @@ async def split_video(input_path):
                     except Exception as e:
                         logger.error(f"Errore lettura progresso: {str(e)}")
                         break
-                        
+                            
                 if buffer:
                     line_str = buffer.decode().strip()
                     match = progress_pattern.search(line_str)
@@ -1343,58 +1362,48 @@ async def split_video(input_path):
                 f"Durata effettiva: {actual_duration:.2f}s"
             )
 
-            if actual_duration < DROP_SEGMENT_THRESHOLD:
-                logger.info(f"Segmento troppo corto ({actual_duration:.2f}s < {DROP_SEGMENT_THRESHOLD}s), eliminazione...")
-                os.remove(out_file)
-                return ("dropped", actual_duration)
+            # 1. Controllo avanzato residuo finale
+            remaining_after_this = total_duration - (start + actual_duration)
+            is_last_segment = (
+                is_last_segment or 
+                abs(remaining_after_this) <= LAST_SEGMENT_TOLERANCE or 
+                remaining_after_this <= DROP_SEGMENT_THRESHOLD
+            )
 
+            # 2. Gestione ultimo segmento speciale
+            if is_last_segment:
+                if actual_size > MAX_FILE_SIZE:
+                    adjustment = await calculate_adjustment(actual_size)
+                    new_duration = target_duration * adjustment
+                    logger.info(f"📉 Ultimo segmento sopra MAX: Riduzione del {(1-adjustment)*100:.1f}%")
+                    os.remove(out_file)
+                    return ("retry", new_duration, attempt + 1)
+                
+                if actual_duration < MIN_LAST_SEGMENT_DURATION:
+                    logger.info(f"🔻 Ultimo segmento troppo corto: {actual_duration}s < {MIN_LAST_SEGMENT_DURATION}s")
+                    os.remove(out_file)
+                    return ("dropped", actual_duration)
+                
+                logger.info(f"🏁 Ultimo segmento accettato (Residuo: {remaining_after_this:.1f}s)")
+                return ("success", out_file, actual_duration)
+
+            # 3. Gestione generale dimensioni
             if actual_size > MAX_FILE_SIZE:
                 adjustment = await calculate_adjustment(actual_size)
                 new_duration = target_duration * adjustment
-                reduction_percent = (1 - adjustment) * 100
-                
-                # Controllo integrità logica
-                if adjustment >= 1:
-                    logger.error("ERRORE LOGICO: Tentativo di riduzione con adjustment >=1")
-                    raise ValueError("Fattore di aggiustamento non valido per riduzione")
-                
-                logger.info(
-                    f"Riduzione durata del {reduction_percent:.1f}% "
-                    f"Nuova durata target: {new_duration:.2f}s "
-                    f"(Originale: {target_duration:.2f}s)"
-                )
+                logger.info(f"📉 Riduzione durata del {(1-adjustment)*100:.1f}%")
                 os.remove(out_file)
                 return ("retry", new_duration, attempt + 1)
 
-            # Modifica: se il segmento è l'ultimo, accettarlo anche se inferiore a MIN_FILE_SIZE
             elif actual_size < MIN_FILE_SIZE:
-                if is_last_segment:
-                    logger.info(f"Ultimo segmento, accettato anche se inferiore a MIN_FILE_SIZE: {actual_size/1e6:.2f}MB")
-                    return ("success", out_file, actual_duration)
-                
                 adjustment = await calculate_adjustment(actual_size)
                 new_duration = min(target_duration * adjustment, total_duration - start)
-                increase_percent = (adjustment - 1) * 100
-                
-                # Controllo integrità logica
-                if adjustment <= 1:
-                    logger.error("ERRORE LOGICO: Tentativo di espansione con adjustment <=1")
-                    raise ValueError("Fattore di aggiustamento non valido per espansione")
-                
-                logger.info(
-                    f"Espansione durata del {increase_percent:.1f}% "
-                    f"Nuova durata target: {new_duration:.2f}s "
-                    f"(Originale: {target_duration:.2f}s)"
-                )
+                logger.info(f"📈 Espansione durata del {(adjustment-1)*100:.1f}%")
                 os.remove(out_file)
                 return ("retry", new_duration, attempt + 1)
 
             else:
-                logger.info(
-                    f"Segmento {part_number:03d} valido! "
-                    f"Dimensione: {actual_size/1e6:.2f}MB "
-                    f"Durata: {actual_duration:.2f}s"
-                )
+                logger.info(f"✅ Segmento valido!")
                 return ("success", out_file, actual_duration)
 
         except Exception as e:
@@ -1403,29 +1412,29 @@ async def split_video(input_path):
             raise
         finally:
             await progress_manager.close_bar(bar_id)
-            logger.info(f"Tempo totale segmento {part_number:03d}: {time.time() - start_time:.2f}s")
+            logger.info(f"⏱ Tempo totale: {time.time() - start_time:.2f}s")
 
     while current_start < total_duration - 1:
         remaining_duration = total_duration - current_start
         
-        if remaining_duration < DROP_SEGMENT_THRESHOLD:
-            logger.info(f"Salto segmento finale (durata residua {remaining_duration:.1f}s < {DROP_SEGMENT_THRESHOLD}s)")
+        # 1. Controllo tolleranza iniziale
+        if abs(remaining_duration) <= LAST_SEGMENT_TOLERANCE:
+            logger.info(f"⏹️ Residuo entro tolleranza iniziale: {remaining_duration:.1f}s")
             break
 
-        logger.info(f"Processing segment {part_number} starting at {current_start:.2f}s")
-        
-        # Calcola la durata target basata sul bitrate fisso
+        # 2. Controllo soglia scarto
+        if remaining_duration <= DROP_SEGMENT_THRESHOLD:
+            logger.info(f"⏹️ Residuo sotto soglia scarto: {remaining_duration:.1f}s ≤ {DROP_SEGMENT_THRESHOLD}s")
+            break
+
+        # Calcolo parametri segmento
         target_duration = (MID_FILE_SIZE * 8) / fixed_bitrate
-        target_duration = min(
-            target_duration,
-            remaining_duration,
-            max(remaining_duration - DROP_SEGMENT_THRESHOLD, DROP_SEGMENT_THRESHOLD)
+        target_duration = min(target_duration, remaining_duration)
+        remaining_after_split = remaining_duration - target_duration
+        is_last_segment = (
+            abs(remaining_after_split) <= LAST_SEGMENT_TOLERANCE or 
+            remaining_after_split <= DROP_SEGMENT_THRESHOLD
         )
-        # Modifica: definizione del flag per ultimo segmento
-        TOLERANCE_SEC = 2.0  # Tolleranza bidirezionale
-
-        is_last_segment = abs((current_start + target_duration) - total_duration) <= TOLERANCE_SEC
-
 
         attempt = 1
         while attempt <= MAX_RETRIES:
@@ -1464,6 +1473,21 @@ async def split_video(input_path):
         else:
             raise RuntimeError(f"Stato sconosciuto: {result[0]}")
 
+    # Merge finale degli ultimi segmenti se necessario
+    if MERGE_LAST_SEGMENTS and len(segments) > 1:
+        last_seg = segments[-1]
+        last_size = os.path.getsize(last_seg)
+        penultimate_seg = segments[-2]
+        penultimate_size = os.path.getsize(penultimate_seg)
+
+        if last_size < MIN_FILE_SIZE and (penultimate_size + last_size) <= MAX_FILE_SIZE:
+            logger.info("🔀 Merge automatico degli ultimi due segmenti")
+            try:
+                merged = await merge_segments([penultimate_seg, last_seg])
+                segments = segments[:-2] + [merged]
+            except Exception as e:
+                logger.error(f"Merge fallito: {str(e)}")
+
     final_segments = await optimize_segments(segments, MAX_FILE_SIZE, MERGE_THRESHOLD, MIN_FILE_SIZE)
     
     # Validazione finale
@@ -1480,13 +1504,14 @@ async def split_video(input_path):
 # FUNZIONE: upload_segment
 # -------------------------------------------------------------------------------
 
-async def upload_segment(segment, vod, part_number, total_parts):
+async def upload_segment(segment, file_info, part_number, total_parts):
+    """Validazione formato prima dell'upload"""
+    if not segment.endswith('.mp4'):
+        raise ValueError(f"Formato non supportato: {os.path.basename(segment)}. Richiesto MP4.")
     bar_id = f"upload_{part_number}"
     thumbnail_path = None
     try:
-        # --- Controllo del moov atom e correzione metadata ---
         async def check_moov_position(file_path):
-            """Verifica la presenza del flag faststart nei metadati"""
             cmd = [
                 "ffprobe",
                 "-loglevel", "info",
@@ -1497,7 +1522,7 @@ async def upload_segment(segment, vod, part_number, total_parts):
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT
+                stderr=asyncio.subprocess.PIPE
             )
             stdout, _ = await proc.communicate()
             return "faststart" in stdout.decode().strip()
@@ -1513,7 +1538,6 @@ async def upload_segment(segment, vod, part_number, total_parts):
                 logger.error(f"Correzione metadata fallita: {str(e)}")
                 raise
 
-        # --- Validazione metadati ---
         metadata = await get_video_metadata(segment)
         required_metadata = ['duration', 'width', 'height', 'bit_rate']
         if not all(key in metadata for key in required_metadata):
@@ -1522,94 +1546,98 @@ async def upload_segment(segment, vod, part_number, total_parts):
         if metadata['duration'] < 1:
             raise ValueError(f"Durata video non valida: {metadata['duration']}s")
 
-        # --- Generazione della thumbnail ---
         thumbnail_path = await generate_thumbnail(segment)
         if not os.path.exists(thumbnail_path):
             raise FileNotFoundError("Thumbnail non generata correttamente")
 
-        # --- Configurazione della connessione ---
         channel_id = int(config["TELEGRAM_CHANNEL_ID"])
         try:
-            created_at = datetime.fromisoformat(vod['created_at'].replace('Z', ''))
-            formatted_date = created_at.strftime("%d/%m/%Y")
-        except (KeyError, ValueError, TypeError) as e:
+            # Prova a estrarre la data direttamente dal titolo
+            extracted_date = extract_date_from_filename(file_info['title'])
+            if extracted_date:
+                date_val = datetime.fromisoformat(extracted_date)
+            elif file_info.get('last_modified'):
+                date_val = datetime.fromisoformat(file_info.get('last_modified').replace('Z', '+00:00'))
+            elif file_info.get('created_at'):
+                date_val = datetime.fromisoformat(file_info['created_at'].replace('Z', '+00:00'))
+            else:
+                raise ValueError("Nessuna data disponibile")
+            formatted_date = date_val.strftime("%d/%m/%Y")
+        except Exception as e:
             logger.error(f"Errore formattazione data: {str(e)}")
             formatted_date = "Data non disponibile"
-        
-        caption = f"{vod['title']} ({formatted_date}) - Part {part_number}/{total_parts}"
 
-        # Connessione robusta con backoff
+        caption = f"{os.path.splitext(file_info['title'])[0]} ({formatted_date}) - Part {part_number}/{total_parts}"
+        logger.info(f"Caption per Telegram: {caption}")
+
         max_attempts = 3
         for attempt in range(max_attempts):
             try:
                 if not client.is_connected():
                     await client.connect()
-                    await asyncio.sleep(2 ** attempt)  # Backoff esponenziale
-                await client.get_me()
+                    await asyncio.sleep(2 ** attempt)
+                
+                if not hasattr(client, '_sender'):
+                    await client._start()
+                
                 channel = await client.get_entity(channel_id)
                 break
             except Exception as e:
                 if attempt == max_attempts - 1:
                     raise RuntimeError(f"Connessione fallita dopo {max_attempts} tentativi: {str(e)}")
-                logger.warning(f"Tentativo connessione {attempt+1}/{max_attempts} fallito, riprovo...")
+                await asyncio.sleep(1)
 
-        # --- Upload con gestione avanzata del progresso ---
         file_size = os.path.getsize(segment)
         await progress_manager.create_bar(bar_id, f"Upload {part_number}/{total_parts}", file_size, 'B')
-        last_progress_update = 0
+        
+        last_progress = 0
         def progress_callback(uploaded_bytes, total_bytes):
-            nonlocal last_progress_update
-            now = time.time()
-            if now - last_progress_update > 0.3:  # Aggiorna ogni 300ms
+            nonlocal last_progress
+            if uploaded_bytes - last_progress > 1024 * 512:
                 asyncio.create_task(progress_manager.update_bar(bar_id, uploaded_bytes))
-                last_progress_update = now
+                last_progress = uploaded_bytes
 
-        # --- Upload file rispettando il limite fisso del chunk size ---
-        # Telegram impone che ogni parte sia di 512 KB (l'ultima parte può essere più piccola)
-        chunk_size = 512  # in KB (fisso)
-        file = await client.upload_file(
-            segment,
-            progress_callback=progress_callback,
-            part_size_kb=chunk_size,
-            file_size=file_size
-        )
+        try:
+            file = await client.upload_file(
+                segment,
+                progress_callback=progress_callback,
+                part_size_kb=512,
+                file_size=file_size
+            )
 
-        # --- Invio del file su Telegram ---
-        await client.send_file(
-            channel,
-            file,
-            caption=caption[:1024],  # Limita la caption a 1024 caratteri
-            thumb=thumbnail_path,
-            attributes=[
-                DocumentAttributeVideo(
-                    duration=int(metadata['duration']),
-                    w=metadata['width'],
-                    h=metadata['height'],
-                    supports_streaming=True  # Abilita lo streaming
-                )
-            ],
-            mime_type='video/mp4',
-            parse_mode='html',
-            part_count=total_parts,
-            force_document=False,  # Importante per lo streaming
-            allow_cache=False,
-            background=False
-        )
+            await client.send_file(
+                channel,
+                file,
+                caption=caption[:1024],
+                thumb=thumbnail_path,
+                attributes=[
+                    DocumentAttributeVideo(
+                        duration=int(metadata['duration']),
+                        w=metadata['width'],
+                        h=metadata['height'],
+                        supports_streaming=True
+                    )
+                ],
+                mime_type='video/mp4',
+                parse_mode='html',
+                force_document=False
+            )
 
-        await progress_manager.close_bar(bar_id)
+        except Exception as e:
+            await log_operation(file_info['id'], 'upload', 'failed', f"Part {part_number}: {str(e)}")
+            raise
+        finally:
+            await progress_manager.close_bar(bar_id)
+
         logger.info(f"Parte {part_number}/{total_parts} caricata correttamente")
         
     except Exception as e:
-        await progress_manager.close_bar(bar_id)
         logger.error(f"Errore upload parte {part_number}: {str(e)}", exc_info=True)
-        await log_operation(vod['id'], 'upload', 'failed', f"Part {part_number}: {str(e)}")
         raise
     finally:
-        # Pulizia affidabile della thumbnail
         if thumbnail_path and os.path.exists(thumbnail_path):
             try:
                 os.remove(thumbnail_path)
-                logger.debug(f"Thumbnail pulita: {os.path.basename(thumbnail_path)}")
             except Exception as e:
                 logger.warning(f"Errore pulizia thumbnail: {str(e)}")
 
