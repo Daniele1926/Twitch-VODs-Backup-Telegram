@@ -942,15 +942,23 @@ async def fix_metadata(input_file):
             "-y",
             "-loglevel", "info",
             "-i", input_file,
-            "-c:v", "copy",
             "-movflags", "+faststart",
             "-map_metadata", "0",
             "-dn",
             "-progress", "pipe:1",
             temp_file
         ]
+
         if is_mkv:
-            cmd += ["-c:a", "aac", "-b:a", "192k"]
+            # Per MKV: copia video, converte audio in AAC
+            cmd += [
+                "-c:v", "copy",
+                "-c:a", "aac",
+                "-b:a", "192k"
+            ]
+        else:
+            # Per MP4/altri: copia TUTTI gli stream senza encoding
+            cmd += ["-c", "copy"]
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,
