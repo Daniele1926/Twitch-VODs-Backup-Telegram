@@ -10,6 +10,7 @@ import stat
 import re
 import yt_dlp 
 import sys
+import tempfile
 import shutil
 import signal
 import cryptg
@@ -846,8 +847,8 @@ async def fix_metadata(input_file):
     logger.info(f"Elaborazione file: {os.path.basename(input_file)}")
     
     is_mkv = input_file.endswith('.mkv')
-    temp_file = os.path.join(tempfile.gettempdir(), os.path.basename(output_file))
     output_file = input_file.replace('.mkv', '.mp4') if is_mkv else input_file
+    temp_file = os.path.join(tempfile.gettempdir(), os.path.basename(output_file))  # Corrected order
 
     try:
         # Costruzione comando FFmpeg ottimizzato
