@@ -986,6 +986,8 @@ async def fix_metadata(input_file):
 
                         # Gestione diretta senza regex
                         if key == "out_time_us":
+                            if value.strip().lower() in ("n/a", "nan", "inf"):
+                                continue
                             try:
                                 microsec = int(value)
                                 current_time = microsec / 1_000_000
@@ -998,7 +1000,7 @@ async def fix_metadata(input_file):
                                     logger.warning("Durata totale non valida per il calcolo della percentuale")
                                     
                             except (ValueError, TypeError) as e:
-                                logger.warning(f"Valore temporale non valido: {value}")
+                                logger.debug(f"Valore temporale non valido: {value}")
                                 continue
 
                         elif key == "progress" and value == "end":
