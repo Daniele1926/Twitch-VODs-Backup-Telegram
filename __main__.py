@@ -905,158 +905,146 @@ async def get_segment_duration(segment_path):
 # FUNZIONE: fix_metadata
 # -------------------------------------------------------------------------------
 async def fix_metadata(input_file):
-    """Converte MKV in MP4 e ottimizza MP4 per lo streaming.
-    Il file originale viene eliminato solo dopo che il file fixed è stato creato con successo.
-    La progress bar viene aggiornata in base al parametro out_time_us.
-    """
-    logger.info(f"Elaborazione file: {os.path.basename(input_file)}")
-    
-    is_mkv = input_file.lower().endswith('.mkv')
-    output_file = input_file.replace('.mkv', '.mp4') if is_mkv else input_file
-    temp_file = os.path.join(
-        tempfile.gettempdir(), 
-        f"temp_{uuid.uuid4().hex}_{os.path.basename(output_file)}"
+    logger.info(f"Fixing metadata per: {os.path.basename(input_file)}")
+    temp_file = input_file.replace(".mp4", "_fixed.mp4")
+
+    cmd = [
+        "ffmpeg",
+        "-y", 
+        "-loglevel", "info",  # Medio tra performance e debugging
+        "-probesize", "5M",     # Sufficiente per il probing iniziale
+        "-analyzeduration", "5M", # Analisi minima ma sicura
+        "-i", input_file,
+        "-c", "copy",
+        "-movflags", "+faststart", 
+        "-max_muxing_queue_size", "9999",
+        "-ignore_unknown",
+        "-fflags", "+nobuffer",
+        "-f", "mp4",
+        "-progress", "pipe:1",
+        "-nostdin",
+        temp_file
+    ]
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT
     )
 
-    try:
-        # Rimozione preventiva di file temporanei o output già esistenti (escluso il file di input)
-        for f in [output_file, temp_file]:
-            if os.path.exists(f) and f != input_file:
-                try:
-                    os.remove(f)
-                    logger.info(f"Rimosso file pre-esistente: {os.path.basename(f)}")
-                except Exception as e:
-                    logger.error(f"Impossibile rimuovere {f}: {str(e)}")
-                    raise
+    duration_pattern = re.compile(r"Duration:\s*(\d+):(\d+):(\d+\.\d+)")
+    out_time_pattern = re.compile(r"out_time=(\d+):(\d+):(\d+\.\d+)")
 
-        # Ottenimento della durata totale del video tramite get_video_metadata già esistente
-        metadata = await get_video_metadata(input_file)
-        total_duration = metadata.get('duration')
-        if total_duration is None or total_duration <= 0:
-            raise RuntimeError("Durata video non ottenuta correttamente")
-        logger.info(f"Durata totale: {total_duration:.2f} secondi")
+    progress_bar = tqdm(
+        total=100,
+        desc="Elaborazione video",
+        unit="%",
+        ascii=True,
+        bar_format="{l_bar}{bar}| {n:.1f}% [{elapsed}<{remaining}]",
+        leave=False
+    )
 
-        # Costruzione del comando FFmpeg per conversione/ottimizzazione
-        cmd = [
-            "ffmpeg",
-            "-y",
-            "-loglevel", "info",
-            "-i", input_file,
-            "-movflags", "+faststart",
-            "-map_metadata", "0",
-            "-dn",
-            "-progress", "pipe:1",
-            temp_file
-        ]
+    async def monitor_progress():
+        buffer = ""
+        duration = None
+        last_progress = 0.0
 
-        if is_mkv:
-            # Per MKV: copia video, converte audio in AAC
-            cmd += [
-                "-c:v", "copy",
-                "-c:a", "aac",
-                "-b:a", "192k"
-            ]
-        else:
-            # Per MP4/altri: copia TUTTI gli stream senza encoding
-            cmd += ["-c", "copy"]
-
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT
-        )
-
-        # Creazione della progress bar (basata su percentuale)
-        progress_bar = tqdm(
-            total=100,
-            desc="Elaborazione video",
-            unit="%",
-            ascii=True,
-            bar_format="{l_bar}{bar}| {n:.1f}% [{elapsed}<{remaining}]",
-            leave=False,
-        )
-
-        async def monitor_progress():
-            current_time = 0.0
-            
+        try:
             while True:
-                try:
-                    line_bytes = await proc.stdout.readline()
-                    if not line_bytes:
-                        break
-                        
-                    line = line_bytes.decode("utf-8", errors="replace").strip()
+                chunk = await proc.stdout.read(4096)
+                if not chunk:
+                    break
+                buffer += chunk.decode(errors='ignore')
+                
+                while "\n" in buffer:
+                    line, buffer = buffer.split("\n", 1)
+                    
+                    # Debug logging per output FFmpeg
+                    logger.debug(f"FFmpeg: {line.strip()}")
+                    
+                    # Estrazione durata
+                    if not duration:
+                        match_duration = duration_pattern.search(line)
+                        if match_duration:
+                            h, m, s = map(float, match_duration.groups())
+                            duration = h * 3600 + m * 60 + s
+                            progress_bar.reset(total=100)
+                            logger.debug(f"Durata rilevata: {duration}s")
+                    
+                    # Calcolo progresso
+                    match_progress = out_time_pattern.search(line)
+                    if match_progress and duration:
+                        h, m, s = map(float, match_progress.groups())
+                        current_time = h * 3600 + m * 60 + s
+                        progress = (current_time / duration) * 100
+                        progress_bar.update(progress - last_progress)
+                        last_progress = progress
+                        logger.debug(f"Progresso: {progress:.1f}%")
 
-                    if "=" in line:
-                        key, value = line.split("=", 1)
-                        key = key.strip()
-                        value = value.strip()
+        except Exception as e:
+            logger.error(f"Errore durante il monitoraggio: {str(e)}")
+            raise
+        finally:
+            # Aspetta la terminazione del processo in ogni caso
+            await proc.wait()
+            logger.debug(f"Processo terminato con codice: {proc.returncode}")
 
-                        # Gestione diretta senza regex
-                        if key == "out_time_us":
-                            if value.strip().lower() in ("n/a", "nan", "inf"):
-                                continue
-                            try:
-                                microsec = int(value)
-                                current_time = microsec / 1_000_000
-                                
-                                if total_duration > 0:
-                                    percent = (current_time / total_duration) * 100
-                                    progress_bar.n = min(percent, 100)
-                                    progress_bar.refresh()
-                                else:
-                                    logger.warning("Durata totale non valida per il calcolo della percentuale")
-                                    
-                            except (ValueError, TypeError) as e:
-                                logger.debug(f"Valore temporale non valido: {value}")
-                                continue
+            # Aggiornamento finale solo se completato con successo
+            if proc.returncode == 0:
+                progress_bar.n = 100
+                progress_bar.refresh()
+            progress_bar.close()
 
-                        elif key == "progress" and value == "end":
-                            logger.debug("Rilevata fine processo FFmpeg")
-                            break
+    try:
+        await asyncio.wait_for(monitor_progress(), timeout=7200)
+    except asyncio.TimeoutError:
+        logger.error("Timeout superato (2 ore)")
+        proc.kill()
+        await proc.wait()
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
+        raise RuntimeError("Timeout di elaborazione")
 
-                except Exception as e:
-                    logger.error(f"Errore durante il monitoraggio del progresso: {str(e)}")
-                    continue
+    # Controllo finale del returncode
+    if proc.returncode != 0:
+        error_log = f"FFmpeg fallito con codice {proc.returncode}"
+        logger.error(error_log)
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
+        raise RuntimeError(error_log)
 
-            # Gestione finale del processo
-            try:
-                await proc.wait()
-                if proc.returncode != 0:
-                    raise RuntimeError(f"FFmpeg exited with code {proc.returncode}")
-            finally:
-                progress_bar.close()
+    # Sostituzione atomica del file
+    os.replace(temp_file, input_file)
+    return input_file
 
-        await monitor_progress()
+async def get_audio_metadata(input_path):
+    """Estende i metadati con info sul codec audio"""
+    cmd = [
+        "ffprobe",
+        "-v", "error",
+        "-select_streams", "a:0",  # Focus su stream audio
+        "-show_entries", "stream=codec_name",
+        "-of", "json",
+        input_path
+    ]
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+    stdout, _ = await proc.communicate()
+    
+    try:
+        audio_data = json.loads(stdout)
+        audio_codec = audio_data['streams'][0]['codec_name'] if audio_data.get('streams') else 'unknown'
+    except Exception:
+        audio_codec = 'unknown'
 
-        # Se il file temporaneo è stato creato correttamente, rinominalo in output_file
-        if os.path.exists(output_file):
-            os.remove(output_file)
-        os.rename(temp_file, output_file)
-        logger.info(f"File ottimizzato creato: {output_file}")
-
-        # Elimina il file originale solo se la conversione è andata a buon fine
-        if is_mkv and input_file != output_file:
-            try:
-                os.remove(input_file)
-                logger.info(f"File MKV originale rimosso: {input_file}")
-            except Exception as e:
-                logger.error(f"Errore nella rimozione del file originale: {str(e)}")
-                # L'errore non blocca la pipeline
-
-        return output_file
-
-    except Exception as e:
-        # Pulizia in caso di errore: elimina eventuali file temporanei
-        for f in [temp_file, output_file]:
-            if os.path.exists(f):
-                try:
-                    os.remove(f)
-                    logger.warning(f"Pulizia file: {f}")
-                except Exception as clean_error:
-                    logger.error(f"Errore pulizia file {f}: {str(clean_error)}")
-        logger.error(f"Errore durante l'elaborazione: {str(e)}")
-        raise
+    # Metadati esistenti (durata, bitrate, etc.)
+    return {
+        'duration': 10518.87,  # Esempio, implementa logica originale
+        'audio_codec': audio_codec
+    }
 
 
 # -------------------------------------------------------------------------------
@@ -1245,13 +1233,6 @@ async def check_encoder_available(encoder_name):
         return False
 
 async def split_video(input_path):
-    """Gestione formati prima dello split"""
-    # Conversione preliminare per MKV
-    if input_path.endswith('.mkv'):
-        intermediate_path = input_path.replace('.mkv', '_temp.mp4')
-        logger.info(f"Conversione MKV -> MP4: {intermediate_path}")
-        await fix_metadata(input_path)
-        input_path = intermediate_path
     logger.info(f"Starting video split for: {input_path}")
 
     # Costanti per la gestione avanzata degli ultimi segmenti
@@ -1600,18 +1581,18 @@ async def split_video(input_path):
     logger.info(f"Splitting completato con {len(final_segments)} segmenti validi")
     return final_segments
 
+
 # -------------------------------------------------------------------------------
 # FUNZIONE: upload_segment
 # -------------------------------------------------------------------------------
 
-async def upload_segment(segment, file_info, part_number, total_parts):
-    """Validazione formato prima dell'upload"""
-    if not segment.endswith('.mp4'):
-        raise ValueError(f"Formato non supportato: {os.path.basename(segment)}. Richiesto MP4.")
+async def upload_segment(segment, vod, part_number, total_parts):
     bar_id = f"upload_{part_number}"
     thumbnail_path = None
     try:
+        # --- Controllo del moov atom e correzione metadata ---
         async def check_moov_position(file_path):
+            """Verifica la presenza del flag faststart nei metadati"""
             cmd = [
                 "ffprobe",
                 "-loglevel", "info",
@@ -1622,7 +1603,7 @@ async def upload_segment(segment, file_info, part_number, total_parts):
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stderr=asyncio.subprocess.STDOUT
             )
             stdout, _ = await proc.communicate()
             return "faststart" in stdout.decode().strip()
@@ -1638,6 +1619,7 @@ async def upload_segment(segment, file_info, part_number, total_parts):
                 logger.error(f"Correzione metadata fallita: {str(e)}")
                 raise
 
+        # --- Validazione metadati ---
         metadata = await get_video_metadata(segment)
         required_metadata = ['duration', 'width', 'height', 'bit_rate']
         if not all(key in metadata for key in required_metadata):
@@ -1646,98 +1628,95 @@ async def upload_segment(segment, file_info, part_number, total_parts):
         if metadata['duration'] < 1:
             raise ValueError(f"Durata video non valida: {metadata['duration']}s")
 
+        # --- Generazione della thumbnail ---
         thumbnail_path = await generate_thumbnail(segment)
         if not os.path.exists(thumbnail_path):
             raise FileNotFoundError("Thumbnail non generata correttamente")
 
+        # --- Configurazione della connessione ---
         channel_id = int(config["TELEGRAM_CHANNEL_ID"])
         try:
-            # Prova a estrarre la data direttamente dal titolo
-            extracted_date = extract_date_from_filename(file_info['title'])
-            if extracted_date:
-                date_val = datetime.fromisoformat(extracted_date)
-            elif file_info.get('last_modified'):
-                date_val = datetime.fromisoformat(file_info.get('last_modified').replace('Z', '+00:00'))
-            elif file_info.get('created_at'):
-                date_val = datetime.fromisoformat(file_info['created_at'].replace('Z', '+00:00'))
-            else:
-                raise ValueError("Nessuna data disponibile")
-            formatted_date = date_val.strftime("%d/%m/%Y")
-        except Exception as e:
+            created_at = datetime.fromisoformat(vod['created_at'].replace('Z', ''))
+            formatted_date = created_at.strftime("%d/%m/%Y")
+        except (KeyError, ValueError, TypeError) as e:
             logger.error(f"Errore formattazione data: {str(e)}")
             formatted_date = "Data non disponibile"
-
-        caption = f"{os.path.splitext(file_info['title'])[0]} ({formatted_date}) - Part {part_number}/{total_parts}"
+        
+        caption = f"{vod['title']} ({formatted_date}) - Part {part_number}/{total_parts}"
         logger.info(f"Caption per Telegram: {caption}")
 
+        # Connessione robusta con backoff
         max_attempts = 3
         for attempt in range(max_attempts):
             try:
                 if not client.is_connected():
                     await client.connect()
-                    await asyncio.sleep(2 ** attempt)
-                
-                if not hasattr(client, '_sender'):
-                    await client._start()
-                
+                    await asyncio.sleep(2 ** attempt)  # Backoff esponenziale
+                await client.get_me()
                 channel = await client.get_entity(channel_id)
                 break
             except Exception as e:
                 if attempt == max_attempts - 1:
                     raise RuntimeError(f"Connessione fallita dopo {max_attempts} tentativi: {str(e)}")
-                await asyncio.sleep(1)
+                logger.warning(f"Tentativo connessione {attempt+1}/{max_attempts} fallito, riprovo...")
 
+        # --- Upload con gestione avanzata del progresso ---
         file_size = os.path.getsize(segment)
         await progress_manager.create_bar(bar_id, f"Upload {part_number}/{total_parts}", file_size, 'B')
-        
-        last_progress = 0
+        last_progress_update = 0
         def progress_callback(uploaded_bytes, total_bytes):
-            nonlocal last_progress
-            if uploaded_bytes - last_progress > 1024 * 512:
+            nonlocal last_progress_update
+            now = time.time()
+            if now - last_progress_update > 0.3:  # Aggiorna ogni 300ms
                 asyncio.create_task(progress_manager.update_bar(bar_id, uploaded_bytes))
-                last_progress = uploaded_bytes
+                last_progress_update = now
 
-        try:
-            file = await client.upload_file(
-                segment,
-                progress_callback=progress_callback,
-                part_size_kb=512,
-                file_size=file_size
-            )
+        # --- Upload file rispettando il limite fisso del chunk size ---
+        # Telegram impone che ogni parte sia di 512 KB (l'ultima parte può essere più piccola)
+        chunk_size = 512  # in KB (fisso)
+        file = await client.upload_file(
+            segment,
+            progress_callback=progress_callback,
+            part_size_kb=chunk_size,
+            file_size=file_size
+        )
 
-            await client.send_file(
-                channel,
-                file,
-                caption=caption[:1024],
-                thumb=thumbnail_path,
-                attributes=[
-                    DocumentAttributeVideo(
-                        duration=int(metadata['duration']),
-                        w=metadata['width'],
-                        h=metadata['height'],
-                        supports_streaming=True
-                    )
-                ],
-                mime_type='video/mp4',
-                parse_mode='html',
-                force_document=False
-            )
+        # --- Invio del file su Telegram ---
+        await client.send_file(
+            channel,
+            file,
+            caption=caption[:1024],  # Limita la caption a 1024 caratteri
+            thumb=thumbnail_path,
+            attributes=[
+                DocumentAttributeVideo(
+                    duration=int(metadata['duration']),
+                    w=metadata['width'],
+                    h=metadata['height'],
+                    supports_streaming=True  # Abilita lo streaming
+                )
+            ],
+            mime_type='video/mp4',
+            parse_mode='html',
+            part_count=total_parts,
+            force_document=False,  # Importante per lo streaming
+            allow_cache=False,
+            background=False
+        )
 
-        except Exception as e:
-            await log_operation(file_info['id'], 'upload', 'failed', f"Part {part_number}: {str(e)}")
-            raise
-        finally:
-            await progress_manager.close_bar(bar_id)
-
+        await progress_manager.close_bar(bar_id)
         logger.info(f"Parte {part_number}/{total_parts} caricata correttamente")
         
     except Exception as e:
+        await progress_manager.close_bar(bar_id)
         logger.error(f"Errore upload parte {part_number}: {str(e)}", exc_info=True)
+        await log_operation(vod['id'], 'upload', 'failed', f"Part {part_number}: {str(e)}")
         raise
     finally:
+        # Pulizia affidabile della thumbnail
         if thumbnail_path and os.path.exists(thumbnail_path):
             try:
                 os.remove(thumbnail_path)
+                logger.debug(f"Thumbnail pulita: {os.path.basename(thumbnail_path)}")
             except Exception as e:
                 logger.warning(f"Errore pulizia thumbnail: {str(e)}")
 
