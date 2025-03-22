@@ -374,7 +374,7 @@ async def log_vod_stats():
 async def handle_failed_vod(vod_id):
     logger.error(f"VOD {vod_id} ha fallito dopo il massimo numero di tentativi.")
     try:
-        await send_telegram_notification(f"⛔ VOD {vod_id} failed after 5 attempts.")
+        await send_telegram_notification(f"VOD {vod_id} failed after 5 attempts.")
         await update_vod_status(vod_id, VodStatus.FAILED.value, increment_retries=False)
     except Exception as e:
         logger.critical(f"Critical error in failure handler: {str(e)}")
@@ -565,7 +565,7 @@ def on_rmtree_error(func, path, exc_info):
     - Differenziazione errori Windows/POSIX
     """
     error_detail = exc_info[1] if isinstance(exc_info, tuple) else exc_info
-    logger.error(f"⚠️ Errore rimozione {path} [{func.__name__}]: {str(error_detail)}")
+    logger.error(f"Errore rimozione {path} [{func.__name__}]: {str(error_detail)}")
 
     # Mappatura avanzata errori
     error_mapping = {
@@ -581,7 +581,7 @@ def on_rmtree_error(func, path, exc_info):
     
     # Ottieni dettaglio errore
     error_msg, solution, perm = error_mapping.get(error_code, ("Errore sconosciuto", "Nessuna soluzione nota", None))
-    logger.warning(f"💡 Diagnostica: {error_msg} | 💡 Soluzione: {solution}")
+    logger.warning(f"Diagnostica: {error_msg} | Soluzione: {solution}")
 
     max_retries = 7 if os.name == 'nt' else 5
     for attempt in range(1, max_retries + 1):
@@ -601,14 +601,14 @@ def on_rmtree_error(func, path, exc_info):
             else:
                 os.remove(path)
 
-            logger.info(f"✅ Rimosso con successo al tentativo {attempt}")
+            logger.info(f"Rimosso con successo al tentativo {attempt}")
             return
 
         except Exception as e:
-            logger.warning(f"⚙️ Tentativo {attempt}/{max_retries} fallito: {str(e)}")
+            logger.warning(f"Tentativo {attempt}/{max_retries} fallito: {str(e)}")
             time.sleep(2 ** attempt + random.uniform(0, 1))  # Backoff esponenziale con jitter
 
-    logger.critical(f"🚨 Rimozione fallita dopo {max_retries} tentativi per: {path}")
+    logger.critical(f"Rimozione fallita dopo {max_retries} tentativi per: {path}")
 
 # Correzione nella funzione cleanup_temp_files
 def cleanup_temp_files(file_dir):
@@ -618,10 +618,10 @@ def cleanup_temp_files(file_dir):
     - Tentativi adattivi
     - Pulizia atomica
     """
-    logger.info(f"🚮 Avvio pulizia avanzata per: {file_dir}")
+    logger.info(f"Avvio pulizia avanzata per: {file_dir}")
     
     if not os.path.exists(file_dir):
-        logger.warning("⌦ Directory inesistente, operazione annullata")
+        logger.warning("Directory inesistente, operazione annullata")
         return True
 
     # Fase 1: Normalizzazione permessi ricorsiva
@@ -635,7 +635,7 @@ def cleanup_temp_files(file_dir):
                     else:
                         os.chmod(path, 0o777)
                 except Exception as e:
-                    logger.error(f"⚙️ Impostazione permessi fallita per {path}: {str(e)}")
+                    logger.error(f"Impostazione permessi fallita per {path}: {str(e)}")
 
     fix_permissions(file_dir)
 
@@ -645,22 +645,22 @@ def cleanup_temp_files(file_dir):
 
     for attempt in range(max_retries):
         try:
-            logger.info(f"♻️ Tentativo {attempt + 1}/{max_retries}")
+            logger.info(f"Tentativo {attempt + 1}/{max_retries}")
             shutil.rmtree(file_dir, onexc=on_rmtree_error)
             break  # Uscita anticipata se successo
         except Exception as e:
-            logger.warning(f"🔥 Tentativo {attempt + 1} fallito: {str(e)}")
+            logger.warning(f"Tentativo {attempt + 1} fallito: {str(e)}")
             fix_permissions(file_dir)  # Ripristina permessi
             time.sleep(retry_delay)
             retry_delay *= 2.5  # Backoff esponenziale
 
     # Verifica incrociata
     if os.path.exists(file_dir):
-        logger.critical(f"🚨 Directory residua: {file_dir}")
-        logger.critical("📁 Contenuto finale: " + str(os.listdir(file_dir)))
+        logger.critical(f"Directory residua: {file_dir}")
+        logger.critical("Contenuto finale: " + str(os.listdir(file_dir)))
         return False
     
-    logger.info("✅ Pulizia completata con successo")
+    logger.info("Pulizia completata con successo")
     return True
 
 # --- Download, split, upload e gestione errori ---
@@ -912,8 +912,8 @@ async def fix_metadata(input_file):
         "ffmpeg",
         "-y", 
         "-loglevel", "info",  # Medio tra performance e debugging
-        "-probesize", "5M",     # Sufficiente per il probing iniziale
-        "-analyzeduration", "5M", # Analisi minima ma sicura
+        "-probesize", "20M",     # Sufficiente per il probing iniziale
+        "-analyzeduration", "20M", # Analisi minima ma sicura
         "-i", input_file,
         "-c", "copy",
         "-movflags", "+faststart", 
@@ -1094,7 +1094,7 @@ async def process_pending_merge(pending, max_size, merge_threshold):
             logger.error(f"Merge fallito: {str(e)}")
             return valid_segments
     else:
-        logger.info("ℹ️ Dimensione totale supera il massimo, segmenti mantenuti separati")
+        logger.info("ℹDimensione totale supera il massimo, segmenti mantenuti separati")
         return valid_segments
 
 # -------------------------------------------------------------------------------
@@ -1137,7 +1137,7 @@ async def optimize_segments(segments, max_size, merge_threshold, min_size):
             reason = []
             if not trigger_condition: reason.append("trigger non soddisfatto")
             if not size_condition: reason.append(f"somma {(penultimate_size + last_size)/1e6:.2f}MB > {max_size/1e6:.2f}MB")
-            logger.info(f"ℹ️ Merge non eseguito: {' + '.join(reason)}")
+            logger.info(f"ℹMerge non eseguito: {' + '.join(reason)}")
     
     return [s for s in optimized if os.path.exists(s)]
 
@@ -1318,8 +1318,8 @@ async def split_video(input_path):
                 "-bf", "1",
                 "-c:a", "aac",
                 "-b:a", "128k",
-                "-f", "mp4",
                 "-movflags", "+faststart",
+                "-f", "mp4",
                 "-nostdin",
                 "-progress", "pipe:1",
                 out_file
@@ -1426,35 +1426,35 @@ async def split_video(input_path):
                 if actual_size > MAX_FILE_SIZE:
                     adjustment = await calculate_adjustment(actual_size)
                     new_duration = target_duration * adjustment
-                    logger.info(f"📉 Ultimo segmento sopra MAX: Riduzione del {(1-adjustment)*100:.1f}%")
+                    logger.info(f"Ultimo segmento sopra MAX: Riduzione del {(1-adjustment)*100:.1f}%")
                     os.remove(out_file)
                     return ("retry", new_duration, attempt + 1)
                 
                 if actual_duration < MIN_LAST_SEGMENT_DURATION:
-                    logger.info(f"🔻 Ultimo segmento troppo corto: {actual_duration}s < {MIN_LAST_SEGMENT_DURATION}s")
+                    logger.info(f"Ultimo segmento troppo corto: {actual_duration}s < {MIN_LAST_SEGMENT_DURATION}s")
                     os.remove(out_file)
                     return ("dropped", actual_duration)
                 
-                logger.info(f"🏁 Ultimo segmento accettato (Residuo: {remaining_after_this:.1f}s)")
+                logger.info(f"Ultimo segmento accettato (Residuo: {remaining_after_this:.1f}s)")
                 return ("success", out_file, actual_duration)
 
             # 3. Gestione generale dimensioni
             if actual_size > MAX_FILE_SIZE:
                 adjustment = await calculate_adjustment(actual_size)
                 new_duration = target_duration * adjustment
-                logger.info(f"📉 Riduzione durata del {(1-adjustment)*100:.1f}%")
+                logger.info(f"Riduzione durata del {(1-adjustment)*100:.1f}%")
                 os.remove(out_file)
                 return ("retry", new_duration, attempt + 1)
 
             elif actual_size < MIN_FILE_SIZE:
                 adjustment = await calculate_adjustment(actual_size)
                 new_duration = min(target_duration * adjustment, total_duration - start)
-                logger.info(f"📈 Espansione durata del {(adjustment-1)*100:.1f}%")
+                logger.info(f"Espansione durata del {(adjustment-1)*100:.1f}%")
                 os.remove(out_file)
                 return ("retry", new_duration, attempt + 1)
 
             else:
-                logger.info(f"✅ Segmento valido!")
+                logger.info(f"Segmento valido!")
                 return ("success", out_file, actual_duration)
 
         except Exception as e:
@@ -1463,19 +1463,19 @@ async def split_video(input_path):
             raise
         finally:
             await progress_manager.close_bar(bar_id)
-            logger.info(f"⏱ Tempo totale: {time.time() - start_time:.2f}s")
+            logger.info(f"Tempo totale: {time.time() - start_time:.2f}s")
 
     while current_start < total_duration - 1:
         remaining_duration = total_duration - current_start
         
         # 1. Controllo tolleranza iniziale
         if abs(remaining_duration) <= LAST_SEGMENT_TOLERANCE:
-            logger.info(f"⏹️ Residuo entro tolleranza iniziale: {remaining_duration:.1f}s")
+            logger.info(f"Residuo entro tolleranza iniziale: {remaining_duration:.1f}s")
             break
 
         # 2. Controllo soglia scarto
         if remaining_duration <= DROP_SEGMENT_THRESHOLD:
-            logger.info(f"⏹️ Residuo sotto soglia scarto: {remaining_duration:.1f}s ≤ {DROP_SEGMENT_THRESHOLD}s")
+            logger.info(f"Residuo sotto soglia scarto: {remaining_duration:.1f}s ≤ {DROP_SEGMENT_THRESHOLD}s")
             break
 
         # Calcolo parametri segmento
@@ -1532,7 +1532,7 @@ async def split_video(input_path):
         penultimate_size = os.path.getsize(penultimate_seg)
 
         if last_size < MIN_FILE_SIZE and (penultimate_size + last_size) <= MAX_FILE_SIZE:
-            logger.info("🔀 Merge automatico degli ultimi due segmenti")
+            logger.info("Merge automatico degli ultimi due segmenti")
             try:
                 merged = await merge_segments([penultimate_seg, last_seg])
                 segments = segments[:-2] + [merged]
