@@ -1017,36 +1017,6 @@ async def fix_metadata(input_file):
     os.replace(temp_file, input_file)
     return input_file
 
-async def get_audio_metadata(input_path):
-    """Estende i metadati con info sul codec audio"""
-    cmd = [
-        "ffprobe",
-        "-v", "error",
-        "-select_streams", "a:0",  # Focus su stream audio
-        "-show_entries", "stream=codec_name",
-        "-of", "json",
-        input_path
-    ]
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
-    )
-    stdout, _ = await proc.communicate()
-    
-    try:
-        audio_data = json.loads(stdout)
-        audio_codec = audio_data['streams'][0]['codec_name'] if audio_data.get('streams') else 'unknown'
-    except Exception:
-        audio_codec = 'unknown'
-
-    # Metadati esistenti (durata, bitrate, etc.)
-    return {
-        'duration': 10518.87,  # Esempio, implementa logica originale
-        'audio_codec': audio_codec
-    }
-
-
 # -------------------------------------------------------------------------------
 # FUNZIONE: merge_segments
 # -------------------------------------------------------------------------------
