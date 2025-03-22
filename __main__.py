@@ -5,6 +5,10 @@ import asyncio
 from enum import Enum
 import logging
 import json
+import errno
+import stat
+import random
+import uuid
 import os
 import stat
 import re
@@ -553,53 +557,111 @@ def kill_child_processes():
     except Exception as e:
         logger.error(f"Errore terminazione processi: {str(e)}")
 
-def cleanup_temp_files(vod_dir):
-    """Pulizia robusta con supporto Windows paths"""
-    logger.warning(f"Pulizia directory temporanea: {vod_dir}")
+def on_rmtree_error(func, path, exc_info):
+    """
+    Gestore avanzato degli errori per shutil.rmtree con:
+    - Gestione ricorsiva dei permessi
+    - Tentativi multipli intelligenti
+    - Differenziazione errori Windows/POSIX
+    """
+    error_detail = exc_info[1] if isinstance(exc_info, tuple) else exc_info
+    logger.error(f"⚠️ Errore rimozione {path} [{func.__name__}]: {str(error_detail)}")
+
+    # Mappatura avanzata errori
+    error_mapping = {
+        errno.EACCES: ("Permesso negato", "File/directory bloccato", 0o777),
+        errno.EPERM: ("Operazione non permessa", "Mancano i privilegi", stat.S_IWUSR),
+        errno.ENOENT: ("File non trovato", "Path inesistente", None),
+        errno.EBUSY: ("File in uso", "Risorsa occupata", None),
+        errno.ENOTEMPTY: ("Directory non vuota", "Contenuto residuo", None)
+    }
+
+    # Correzione: aggiunto parentesi mancante
+    error_code = getattr(error_detail, 'winerror', getattr(error_detail, 'errno', None))  # <-- FIX HERE
     
-    # Normalizza il percorso per Windows
-    vod_dir = os.path.normpath(vod_dir)
+    # Ottieni dettaglio errore
+    error_msg, solution, perm = error_mapping.get(error_code, ("Errore sconosciuto", "Nessuna soluzione nota", None))
+    logger.warning(f"💡 Diagnostica: {error_msg} | 💡 Soluzione: {solution}")
+
+    max_retries = 7 if os.name == 'nt' else 5
+    for attempt in range(1, max_retries + 1):
+        try:
+            # Fix permessi mirato
+            if perm:
+                if os.path.isdir(path):
+                    os.chmod(path, perm)
+                    if os.name == 'nt':
+                        os.chmod(path, stat.S_IRWXU)
+                else:
+                    os.chmod(path, perm)
+
+            # Forza rimozione ricorsiva per directory
+            if os.path.isdir(path):
+                shutil.rmtree(path, ignore_errors=False, onerror=on_rmtree_error)
+            else:
+                os.remove(path)
+
+            logger.info(f"✅ Rimosso con successo al tentativo {attempt}")
+            return
+
+        except Exception as e:
+            logger.warning(f"⚙️ Tentativo {attempt}/{max_retries} fallito: {str(e)}")
+            time.sleep(2 ** attempt + random.uniform(0, 1))  # Backoff esponenziale con jitter
+
+    logger.critical(f"🚨 Rimozione fallita dopo {max_retries} tentativi per: {path}")
+
+# Correzione nella funzione cleanup_temp_files
+def cleanup_temp_files(file_dir):
+    """
+    Pulizia avanzata delle directory temporanee con:
+    - Gestione ricorsiva dei permessi
+    - Tentativi adattivi
+    - Pulizia atomica
+    """
+    logger.info(f"🚮 Avvio pulizia avanzata per: {file_dir}")
     
-    if not os.path.exists(vod_dir):
-        logger.info(f"Directory {vod_dir} non esiste, niente da pulire")
+    if not os.path.exists(file_dir):
+        logger.warning("⌦ Directory inesistente, operazione annullata")
         return True
 
+    # Fase 1: Normalizzazione permessi ricorsiva
+    def fix_permissions(root_path):
+        for root, dirs, files in os.walk(root_path, topdown=False):
+            for name in dirs + files:
+                path = os.path.join(root, name)
+                try:
+                    if os.name == 'nt':
+                        os.chmod(path, stat.S_IRWXU)
+                    else:
+                        os.chmod(path, 0o777)
+                except Exception as e:
+                    logger.error(f"⚙️ Impostazione permessi fallita per {path}: {str(e)}")
+
+    fix_permissions(file_dir)
+
+    # Fase 2: Rimozione adattiva
     max_retries = 5
-    retry_delay = 1  # secondi
-
-    def on_rmtree_error(func, path, exc_info):
-        error_detail = exc_info[1] if isinstance(exc_info, tuple) else exc_info
-        logger.error(f"Rimozione fallita per {path} [{func.__name__}]: {error_detail}")
-        
-        # Modifica permessi per Windows
-        try:
-            if os.name == 'nt':
-                os.chmod(path, stat.S_IWUSR)  # Write permission per l'utente
-                if os.path.isdir(path):
-                    shutil.rmtree(path, ignore_errors=True)
-                else:
-                    os.remove(path)
-            else:
-                os.chmod(path, 0o777)  # Permessi completi su Unix
-                func(path)
-                
-            logger.info(f"Permessi fixati per {path}")
-        except Exception as e:
-            logger.error(f"Tentativo fix permessi fallito per {path}: {str(e)}")
-
+    retry_delay = 1.5
 
     for attempt in range(max_retries):
         try:
-            shutil.rmtree(vod_dir, onexc=on_rmtree_error)
-            logger.info(f"Directory rimossa: {vod_dir}")
-            return True
+            logger.info(f"♻️ Tentativo {attempt + 1}/{max_retries}")
+            shutil.rmtree(file_dir, onexc=on_rmtree_error)
+            break  # Uscita anticipata se successo
         except Exception as e:
-            logger.warning(f"Tentativo {attempt + 1}/{max_retries} fallito: {str(e)}")
+            logger.warning(f"🔥 Tentativo {attempt + 1} fallito: {str(e)}")
+            fix_permissions(file_dir)  # Ripristina permessi
             time.sleep(retry_delay)
-            retry_delay *= 2
+            retry_delay *= 2.5  # Backoff esponenziale
 
-    logger.error(f"Pulizia fallita dopo {max_retries} tentativi: {vod_dir}")
-    return False
+    # Verifica incrociata
+    if os.path.exists(file_dir):
+        logger.critical(f"🚨 Directory residua: {file_dir}")
+        logger.critical("📁 Contenuto finale: " + str(os.listdir(file_dir)))
+        return False
+    
+    logger.info("✅ Pulizia completata con successo")
+    return True
 
 # --- Download, split, upload e gestione errori ---
 async def download_vod(vod, token_manager):
@@ -843,31 +905,52 @@ async def get_segment_duration(segment_path):
 # FUNZIONE: fix_metadata
 # -------------------------------------------------------------------------------
 async def fix_metadata(input_file):
-    """Converte MKV in MP4 e ottimizza MP4 per lo streaming con gestione avanzata"""
+    """Converte MKV in MP4 e ottimizza MP4 per lo streaming.
+    Il file originale viene eliminato solo dopo che il file fixed è stato creato con successo.
+    La progress bar viene aggiornata in base al parametro out_time_us.
+    """
     logger.info(f"Elaborazione file: {os.path.basename(input_file)}")
     
-    is_mkv = input_file.endswith('.mkv')
+    is_mkv = input_file.lower().endswith('.mkv')
     output_file = input_file.replace('.mkv', '.mp4') if is_mkv else input_file
-    temp_file = os.path.join(tempfile.gettempdir(), os.path.basename(output_file))  # Corrected order
+    temp_file = os.path.join(
+        tempfile.gettempdir(), 
+        f"temp_{uuid.uuid4().hex}_{os.path.basename(output_file)}"
+    )
 
     try:
-        # Costruzione comando FFmpeg ottimizzato
+        # Rimozione preventiva di file temporanei o output già esistenti (escluso il file di input)
+        for f in [output_file, temp_file]:
+            if os.path.exists(f) and f != input_file:
+                try:
+                    os.remove(f)
+                    logger.info(f"Rimosso file pre-esistente: {os.path.basename(f)}")
+                except Exception as e:
+                    logger.error(f"Impossibile rimuovere {f}: {str(e)}")
+                    raise
+
+        # Ottenimento della durata totale del video tramite get_video_metadata già esistente
+        metadata = await get_video_metadata(input_file)
+        total_duration = metadata.get('duration')
+        if total_duration is None or total_duration <= 0:
+            raise RuntimeError("Durata video non ottenuta correttamente")
+        logger.info(f"Durata totale: {total_duration:.2f} secondi")
+
+        # Costruzione del comando FFmpeg per conversione/ottimizzazione
         cmd = [
             "ffmpeg",
             "-y",
             "-loglevel", "info",
             "-i", input_file,
-            "-c:v", "copy",               # Nessuna riconversione video
-            "-movflags", "+faststart",     # MOOV atom all'inizio
-            "-map_metadata", "0",          # Mantieni metadati
-            "-dn",                        # Disabilita data networks
+            "-c:v", "copy",
+            "-movflags", "+faststart",
+            "-map_metadata", "0",
+            "-dn",
             "-progress", "pipe:1",
-            temp_file                      # Output su file temporaneo
+            temp_file
         ]
-
-        # Conversione audio solo per MKV con parametri moderni
         if is_mkv:
-            cmd += ["-c:a", "aac", "-b:a", "192k"]  # Rimossa opzione 'strict'
+            cmd += ["-c:a", "aac", "-b:a", "192k"]
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -875,11 +958,7 @@ async def fix_metadata(input_file):
             stderr=asyncio.subprocess.STDOUT
         )
 
-        # Regex migliorate per parsing output
-        duration_pattern = re.compile(r"Duration:\s*(\d+):(\d+):(\d+\.\d+)")
-        out_time_pattern = re.compile(r"out_time=(\d+):(\d+):(\d+\.\d+)")
-        error_pattern = re.compile(r"error|failed", re.IGNORECASE)
-
+        # Creazione della progress bar (basata su percentuale)
         progress_bar = tqdm(
             total=100,
             desc="Elaborazione video",
@@ -887,89 +966,99 @@ async def fix_metadata(input_file):
             ascii=True,
             bar_format="{l_bar}{bar}| {n:.1f}% [{elapsed}<{remaining}]",
             leave=False,
-            colour="GREEN"
         )
 
         async def monitor_progress():
-            buffer = ""
-            duration = None
-            last_progress = 0.0
-
-            try:
-                while True:
-                    chunk = await proc.stdout.read(4096)
-                    if not chunk:
+            current_time = 0.0
+            progress_pattern = re.compile(r"out_time_us=(\d+)")  # Regex migliorata per valori numerici
+            
+            while True:
+                try:
+                    line_bytes = await proc.stdout.readline()
+                    if not line_bytes:
                         break
-                    buffer += chunk.decode(errors='ignore')
-                    
-                    # Controllo errori
-                    if error_pattern.search(buffer):
-                        raise RuntimeError("Errore rilevato in output FFmpeg")
-                    
-                    # Processa linea per linea
-                    while "\n" in buffer:
-                        line, buffer = buffer.split("\n", 1)
-                        line = line.strip()
                         
-                        logger.debug(f"FFmpeg: {line}")
-                        
-                        # Estrazione durata
-                        if not duration:
-                            match = duration_pattern.search(line)
-                            if match:
-                                h, m, s = map(float, match.groups())
-                                duration = h * 3600 + m * 60 + s
-                                progress_bar.reset(total=100)
-                                logger.info(f"Durata totale: {duration:.2f}s")
-                        
-                        # Calcolo progresso
-                        match = out_time_pattern.search(line)
-                        if match and duration:
-                            h, m, s = map(float, match.groups())
-                            current_time = h * 3600 + m * 60 + s
-                            progress = (current_time / duration) * 100
-                            progress_bar.update(progress - last_progress)
-                            last_progress = progress
+                    line = line_bytes.decode("utf-8", errors="replace").strip()
 
-            except Exception as e:
-                logger.error(f"Errore durante il monitoraggio: {str(e)}")
-                raise
-            finally:
+                    # Filtraggio avanzato delle linee non pertinenti
+                    if not line.startswith("out_time_us") and not line.startswith("progress"):
+                        continue
+
+                    if "=" in line:
+                        key, value = line.split("=", 1)
+                        key = key.strip()
+                        value = value.strip()
+
+                        # Gestione out_time_us con regex e validazione
+                        if key == "out_time_us":
+                            match = progress_pattern.match(value)
+                            if not match:
+                                logger.warning(f"Formato out_time_us non valido: {value}")
+                                continue
+                                
+                            try:
+                                microsec = int(match.group(1))
+                                current_time = microsec / 1_000_000
+                                
+                                # Controllo sicurezza divisione
+                                if total_duration > 0:
+                                    percent = (current_time / total_duration) * 100
+                                    progress_bar.n = min(percent, 100)
+                                    progress_bar.refresh()
+                                else:
+                                    logger.warning("Durata totale non valida per il calcolo della percentuale")
+                                    
+                            except (ValueError, TypeError) as e:
+                                logger.error(f"Errore conversione out_time_us: {str(e)}")
+                                continue
+
+                        # Gestione fine processo
+                        elif key == "progress" and value == "end":
+                            logger.debug("Rilevata fine processo FFmpeg")
+                            break
+
+                except Exception as e:
+                    logger.error(f"Errore durante il monitoraggio del progresso: {str(e)}")
+                    continue
+
+            # Gestione finale del processo
+            try:
                 await proc.wait()
-                progress_bar.close()
-
-                # Controllo finale dello stato
                 if proc.returncode != 0:
                     raise RuntimeError(f"FFmpeg exited with code {proc.returncode}")
+            finally:
+                progress_bar.close()
 
-        # Avvia monitoraggio con timeout
-        try:
-            await asyncio.wait_for(monitor_progress(), timeout=7200)
-        except asyncio.TimeoutError:
-            logger.error("Timeout superato (2 ore)")
-            proc.kill()
-            raise RuntimeError("Timeout di elaborazione")
-        
-        # Rinomina file temporaneo
+        await monitor_progress()
+
+        # Se il file temporaneo è stato creato correttamente, rinominalo in output_file
+        if os.path.exists(output_file):
+            os.remove(output_file)
         os.rename(temp_file, output_file)
         logger.info(f"File ottimizzato creato: {output_file}")
 
-        # Pulizia MKV originale solo se conversione riuscita
-        if is_mkv and os.path.exists(input_file):
-            os.remove(input_file)
-            logger.info(f"Rimosso file MKV originale: {input_file}")
+        # Elimina il file originale solo se la conversione è andata a buon fine
+        if is_mkv and input_file != output_file:
+            try:
+                os.remove(input_file)
+                logger.info(f"File MKV originale rimosso: {input_file}")
+            except Exception as e:
+                logger.error(f"Errore nella rimozione del file originale: {str(e)}")
+                # L'errore non blocca la pipeline
 
         return output_file
 
     except Exception as e:
-        # Pulizia file temporanei in caso di errore
-        if os.path.exists(temp_file):
-            os.remove(temp_file)
-        if os.path.exists(output_file):
-            os.remove(output_file)
+        # Pulizia in caso di errore: elimina eventuali file temporanei
+        for f in [temp_file, output_file]:
+            if os.path.exists(f):
+                try:
+                    os.remove(f)
+                    logger.warning(f"Pulizia file: {f}")
+                except Exception as clean_error:
+                    logger.error(f"Errore pulizia file {f}: {str(clean_error)}")
         logger.error(f"Errore durante l'elaborazione: {str(e)}")
         raise
-
 
 
 # -------------------------------------------------------------------------------
