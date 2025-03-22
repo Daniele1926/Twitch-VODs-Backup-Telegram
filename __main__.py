@@ -495,7 +495,7 @@ async def validate_media_file(file_path):
             stderr=asyncio.subprocess.DEVNULL
         )
 
-        time_pattern = re.compile(r"out_time_ms=(\d+)")
+        time_pattern = re.compile(r"out_time_us=(\d+)")
         start_time = time.time()
 
         async def read_stdout():
