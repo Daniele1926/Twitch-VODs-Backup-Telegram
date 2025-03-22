@@ -1379,7 +1379,7 @@ async def split_video(input_path):
                 stderr=asyncio.subprocess.PIPE
             )
 
-            progress_pattern = re.compile(r"out_time_ms=(\d+)")
+            progress_pattern = re.compile(r"out_time_us=(\d+)")
             
             async def read_progress():
                 if proc.stdout is None:
