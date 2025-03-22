@@ -970,7 +970,6 @@ async def fix_metadata(input_file):
 
         async def monitor_progress():
             current_time = 0.0
-            progress_pattern = re.compile(r"out_time_us=(\d+)")  # Regex migliorata per valori numerici
             
             while True:
                 try:
@@ -980,27 +979,17 @@ async def fix_metadata(input_file):
                         
                     line = line_bytes.decode("utf-8", errors="replace").strip()
 
-                    # Filtraggio avanzato delle linee non pertinenti
-                    if not line.startswith("out_time_us") and not line.startswith("progress"):
-                        continue
-
                     if "=" in line:
                         key, value = line.split("=", 1)
                         key = key.strip()
                         value = value.strip()
 
-                        # Gestione out_time_us con regex e validazione
+                        # Gestione diretta senza regex
                         if key == "out_time_us":
-                            match = progress_pattern.match(value)
-                            if not match:
-                                logger.warning(f"Formato out_time_us non valido: {value}")
-                                continue
-                                
                             try:
-                                microsec = int(match.group(1))
+                                microsec = int(value)
                                 current_time = microsec / 1_000_000
                                 
-                                # Controllo sicurezza divisione
                                 if total_duration > 0:
                                     percent = (current_time / total_duration) * 100
                                     progress_bar.n = min(percent, 100)
@@ -1009,10 +998,9 @@ async def fix_metadata(input_file):
                                     logger.warning("Durata totale non valida per il calcolo della percentuale")
                                     
                             except (ValueError, TypeError) as e:
-                                logger.error(f"Errore conversione out_time_us: {str(e)}")
+                                logger.warning(f"Valore temporale non valido: {value}")
                                 continue
 
-                        # Gestione fine processo
                         elif key == "progress" and value == "end":
                             logger.debug("Rilevata fine processo FFmpeg")
                             break
@@ -1307,6 +1295,9 @@ async def split_video(input_path):
     fixed_bitrate = avg_bitrate  # Bitrate rimane fisso
 
     async def calculate_adjustment(actual_size):
+        if actual_size <= 0:
+            logger.error("Dimensione effettiva non valida per il calcolo dell'adjustment")
+            return 1.0
         range_size = MAX_FILE_SIZE - MIN_FILE_SIZE
         mid_size = MID_FILE_SIZE
 
@@ -1397,10 +1388,19 @@ async def split_video(input_path):
                         
                         for line in lines[:-1]:
                             line_str = line.decode().strip()
-                            match = progress_pattern.search(line_str)
-                            if match:
-                                current_time = int(match.group(1)) / 1_000_000
-                                await progress_manager.update_bar(bar_id, current_time)
+                            if '=' in line_str:
+                                key, value = line_str.split("=", 1)
+                                key = key.strip()
+                                value = value.strip()
+
+                                # Nuova gestione out_time_us senza regex
+                                if key == "out_time_us":
+                                    try:
+                                        current_time = int(value) / 1_000_000
+                                        await progress_manager.update_bar(bar_id, current_time)
+                                    except ValueError:
+                                        logger.debug(f"Ignorato valore non numerico: {value}")
+                                        continue
                                 
                         buffer = lines[-1] if lines else b""
                         
