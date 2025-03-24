@@ -9,7 +9,8 @@ FEATURES:
 - Automatic download new VODs
 - Support for only subs VODs
 - SQL Database to track failed VODs, completed VODs, currently in live VODs and retries
-- Smart automatic split for VODs larger than 2/4GB (depends on Telegram limits)
+- Smart automatic split for VODs larger than 2/4GB (depends on Telegram limits), super fast
+- Telegram super uploading speed by FastTelethonhelper module and cryptg encryption
 - Telegram caption with thumbnail, streaming support, VOD title, date and part
 
 INSTALL
