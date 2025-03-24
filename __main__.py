@@ -1300,7 +1300,6 @@ async def split_video(input_path):
                 unit='s'
             )
 
-# Sostituisci la sezione del comando ffmpeg nello split_segment con:
             cmd = [
                 "ffmpeg",
                 "-y",
@@ -1308,16 +1307,9 @@ async def split_video(input_path):
                 "-ss", str(start),
                 "-i", input_path,
                 "-t", str(target_duration),
-                "-c:v", "libx264",
-                "-preset", "veryfast",
-                "-profile:v", "main",
-                "-tune", "zerolatency",
-                "-x264-params", "nal-hrd=cbr",
-                "-b:v", f"{int(fixed_bitrate//1000)}k",
-                "-g", "60",
-                "-bf", "1",
-                "-c:a", "aac",
-                "-b:a", "128k",
+                "-fflags", "+flush_packets",
+                "-c:v", "copy",
+                "-c:a", "copy",
                 "-movflags", "+faststart",
                 "-f", "mp4",
                 "-nostdin",
@@ -1398,7 +1390,7 @@ async def split_video(input_path):
                 logger.error(f"Errore FFmpeg (code {proc.returncode}): {error_msg}")
                 raise RuntimeError(f"Errore FFmpeg (code {proc.returncode})")
 
-            out_file = await fix_metadata(out_file)
+            out_file = out_file
             await progress_manager.update_bar(bar_id, target_duration)
             
             metadata_seg = await get_video_metadata(out_file)
