@@ -8,13 +8,11 @@ import json
 import errno
 import stat
 import random
-import uuid
 import os
 import stat
 import re
 import yt_dlp 
 import sys
-import tempfile
 import shutil
 import signal
 import cryptg
@@ -22,6 +20,7 @@ import time
 import psutil
 from datetime import datetime
 from tqdm.asyncio import tqdm 
+from FastTelethonhelper import fast_upload
 from telethon import TelegramClient 
 from telethon.tl.types import DocumentAttributeVideo
 
