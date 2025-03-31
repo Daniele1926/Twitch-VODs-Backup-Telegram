@@ -9,13 +9,11 @@ import errno
 import stat
 import random
 import os
-import stat
 import re
 import yt_dlp 
 import sys
 import shutil
 import signal
-import cryptg
 import time
 import psutil
 from datetime import datetime
@@ -23,7 +21,6 @@ from tqdm.asyncio import tqdm
 from FastTelethonhelper import fast_upload
 from telethon import TelegramClient 
 from telethon.tl.types import DocumentAttributeVideo
-
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMP_ROOT = os.path.join(SCRIPT_DIR, "Temp")
@@ -38,8 +35,6 @@ class VodStatus(str, Enum):
     COMPLETED = 'completed'
     FAILED = 'failed'
 
-# Configurazione logging avanzata
-# Configurazione logging avanzata
 class TqdmLoggingHandler(logging.Handler):
     def emit(self, record):
         try:
@@ -60,37 +55,29 @@ class RemoveUnwantedUpdatesFilter(logging.Filter):
         return not any(bm in msg for bm in blocked_messages)
 
 def setup_logging():
-    # Crea logger principale
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
 
-    # Rimuovi handlers esistenti
     for handler in root_logger.handlers[:]:
         root_logger.removeHandler(handler)
 
-    # Crea formattatore comune
     formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
-    # File handler con encoding UTF-8
     file_handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
     file_handler.setFormatter(formatter)
     root_logger.addHandler(file_handler)
 
-    # Tqdm handler per output a schermo
     tqdm_handler = TqdmLoggingHandler()
     tqdm_handler.setFormatter(formatter)
     root_logger.addHandler(tqdm_handler)
 
-    # Applica filtri per Telethon
     telethon_logger = logging.getLogger("telethon.client.updates")
     telethon_logger.addFilter(RemoveUnwantedUpdatesFilter())
     telethon_logger.setLevel(logging.WARNING)
 
-    # Imposta livello per altri logger Telethon
     for name in ["telethon", "telethon.network", "telethon.crypto"]:
         logging.getLogger(name).setLevel(logging.WARNING)
 
-# Inizializza il logging all'avvio
 setup_logging()
 logger = logging.getLogger(__name__)
 
@@ -189,7 +176,6 @@ class NetworkRetryManager:
         return False
     
 class ProgressBarManager:
-    """Gestione centralizzata delle progress bar con tqdm"""
     def __init__(self):
         self.bars = {}
         self.lock = asyncio.Lock()
@@ -208,7 +194,7 @@ class ProgressBarManager:
                 dynamic_ncols=True,
                 leave=False,
                 position=self.next_position,
-                mininterval=0.1,  # <-- Forza aggiornamenti più frequenti
+                mininterval=0.1,
                 maxinterval=1.0,
                 ascii=True
             )
@@ -252,8 +238,10 @@ async def check_dependencies():
 client = TelegramClient("session", config["TELEGRAM_API_ID"], config["TELEGRAM_API_HASH"])
 
 async def init_db():
-    logger.info("Inizializzazione database...")  
-    async with aiosqlite.connect(config["DATABASE_NAME"]) as db:
+    logger.info("Inizializzazione database...")
+    db = None
+    try:
+        db = await aiosqlite.connect(config["DATABASE_NAME"])
         await db.execute('''
             CREATE TABLE IF NOT EXISTS vods (
                 id TEXT PRIMARY KEY, 
@@ -280,85 +268,108 @@ async def init_db():
             )
         ''')
         await db.commit()
-    logger.info("Database inizializzato")
+        logger.info("Database inizializzato")
+    except Exception as e:
+        logger.error(f"Errore inizializzazione DB: {str(e)}")
+        raise
+    finally:
+        if db:
+            await db.close()
 
 async def log_operation(vod_id, op_type, status, details=""):
+    db = None
     try:
-        logger.info(f"Logging operazione: {vod_id} - {op_type} - {status}")  
-        async with aiosqlite.connect(config["DATABASE_NAME"]) as db:
-            await db.execute('''
-                INSERT INTO operations 
-                (vod_id, operation_type, status, timestamp, details)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (vod_id, op_type, status, datetime.now().isoformat(), details))
-            await db.commit()
+        logger.info(f"Logging operazione: {vod_id} - {op_type} - {status}")
+        db = await aiosqlite.connect(config["DATABASE_NAME"])
+        await db.execute('''
+            INSERT INTO operations 
+            (vod_id, operation_type, status, timestamp, details)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (vod_id, op_type, status, datetime.now().isoformat(), details))
+        await db.commit()
         logger.info(f"Log operazione: {vod_id} - {op_type} - {status}")
     except Exception as e:
         logger.error(f"Fallito log operazione: {str(e)}")
         raise
+    finally:
+        if db:
+            await db.close()
 
 async def update_vod_status(vod_id, status, increment_retries=False):
-    logger.info(f"Aggiornamento stato VOD {vod_id} a {status} (incrementa retries: {increment_retries})") 
-    async with aiosqlite.connect(config["DATABASE_NAME"]) as db:
-        try:
-            if increment_retries:
-                cursor = await db.execute("SELECT retries FROM vods WHERE id = ?", (vod_id,))
-                result = await cursor.fetchone()
-                retries = result[0] if result else 0
-                
-                vod_settings = config["VOD_SETTINGS"]
-                min_retry_delay = vod_settings.get("MIN_RETRY_DELAY", 300)
-                max_retry_delay = vod_settings.get("MAX_RETRY_DELAY", 86400)
-                delay = min(min_retry_delay * (2 ** retries), max_retry_delay)
-                next_retry = datetime.fromtimestamp(time.time() + delay).isoformat()
+    logger.info(f"Aggiornamento stato VOD {vod_id} a {status} (incrementa retries: {increment_retries})")
+    db = None
+    try:
+        db = await aiosqlite.connect(config["DATABASE_NAME"])
+        await db.execute("BEGIN")
+        
+        if increment_retries:
+            cursor = await db.execute("SELECT retries FROM vods WHERE id = ?", (vod_id,))
+            result = await cursor.fetchone()
+            retries = result[0] if result else 0
+            
+            vod_settings = config["VOD_SETTINGS"]
+            min_retry_delay = vod_settings.get("MIN_RETRY_DELAY", 300)
+            max_retry_delay = vod_settings.get("MAX_RETRY_DELAY", 86400)
+            delay = min(min_retry_delay * (2 ** retries), max_retry_delay)
+            next_retry = datetime.fromtimestamp(time.time() + delay).isoformat()
 
-                logger.warning(f"Aumento tentativi per {vod_id} (nuovo tentativo in {delay}s)")  
-                await db.execute('''
-                    UPDATE vods 
-                    SET status = ?, retries = retries + 1, 
-                        last_attempt = ?, next_retry = ?
-                    WHERE id = ?
-                ''', (status, datetime.now().isoformat(), next_retry, vod_id))
-            else:
-                await db.execute('''
-                    UPDATE vods 
-                    SET status = ?, last_attempt = ?
-                    WHERE id = ?
-                ''', (status, datetime.now().isoformat(), vod_id))
-
-            await db.commit()
-            logger.info(f"Update stato per {vod_id}: {status}")  
-        except Exception as e:
-            logger.error(f"Update status fallito per {vod_id}: {str(e)}")  
+            logger.warning(f"Aumento tentativi per {vod_id} (nuovo tentativo in {delay}s")
+            await db.execute('''
+                UPDATE vods 
+                SET status = ?, retries = retries + 1, 
+                    last_attempt = ?, next_retry = ?
+                WHERE id = ?
+            ''', (status, datetime.now().isoformat(), next_retry, vod_id))
+        else:
+            await db.execute('''
+                UPDATE vods 
+                SET status = ?, last_attempt = ?
+                WHERE id = ?
+            ''', (status, datetime.now().isoformat(), vod_id))
+        
+        await db.commit()
+        logger.info(f"Update stato per {vod_id}: {status}")
+    except Exception as e:
+        logger.error(f"Update status fallito per {vod_id}: {str(e)}")
+        if db:
             await db.rollback()
-            raise
+        raise
+    finally:
+        if db:
+            await db.close()
 
 async def get_pending_vods():
     logger.info("Recupero pending VODs...")
-    
-    ordering_config = config.get("VOD_ORDERING", {"field": "created_at", "order": "asc"})
-    field = ordering_config.get("field", "created_at")
-    order = ordering_config.get("order", "asc").upper()
-    
-    query = f"""
-        SELECT * FROM vods 
-        WHERE status = ? 
-          AND (next_retry IS NULL OR datetime(next_retry) <= datetime('now'))
-          AND status NOT IN ('{VodStatus.LIVE.value}', '{VodStatus.FAILED.value}', '{VodStatus.COMPLETED.value}')
-        ORDER BY {field} {order}, retries ASC
-        LIMIT 100
-    """
-    
-    async with aiosqlite.connect(config["DATABASE_NAME"]) as db:
+    db = None
+    try:
+        ordering_config = config.get("VOD_ORDERING", {"field": "created_at", "order": "asc"})
+        field = ordering_config.get("field", "created_at")
+        order = ordering_config.get("order", "asc").upper()
+        
+        query = f"""
+            SELECT * FROM vods 
+            WHERE status = ? 
+              AND (next_retry IS NULL OR datetime(next_retry) <= datetime('now'))
+              AND status NOT IN ('{VodStatus.LIVE.value}', '{VodStatus.FAILED.value}', '{VodStatus.COMPLETED.value}')
+            ORDER BY {field} {order}, retries ASC
+            LIMIT 100
+        """
+        
+        db = await aiosqlite.connect(config["DATABASE_NAME"])
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(query, (VodStatus.PENDING.value,))
         rows = await cursor.fetchall()
         results = [dict(row) for row in rows]
         logger.info(f"Trovati {len(results)} pending VODs ordinati per {field} {order}")
         return results
+    finally:
+        if db:
+            await db.close()
 
 async def log_vod_stats():
-    async with aiosqlite.connect(config["DATABASE_NAME"]) as db:
+    db = None
+    try:
+        db = await aiosqlite.connect(config["DATABASE_NAME"])
         cursor = await db.execute("SELECT status, COUNT(*) as count FROM vods GROUP BY status")
         rows = await cursor.fetchall()
         stats = { row[0]: row[1] for row in rows }
@@ -369,6 +380,9 @@ async def log_vod_stats():
             f"Failed: {stats.get(VodStatus.FAILED.value, 0)}, "
             f"Live: {stats.get(VodStatus.LIVE.value, 0)} "
         )
+    finally:
+        if db:
+            await db.close()
 
 async def handle_failed_vod(vod_id):
     logger.error(f"VOD {vod_id} ha fallito dopo il massimo numero di tentativi.")
@@ -388,6 +402,7 @@ def parse_duration(duration_str):
 
 async def check_new_vods():
     logger.info("Check nuovi VODs su Twitch...")
+    db = None
     try:
         async with aiohttp.ClientSession() as session:
             headers = {
@@ -412,57 +427,60 @@ async def check_new_vods():
                 new_vods = 0
                 live_phrases = config.get("PHRASE_IN_THUMBNAIL_URL", ["404_processing"])
                 
-                async with aiosqlite.connect(config["DATABASE_NAME"]) as db:
-                    db.row_factory = aiosqlite.Row
-                    for vod in data['data']:
-                        duration_str = vod.get("duration", "0s")
-                        duration_seconds = parse_duration(duration_str)
-                        
-                        is_live = any(phrase in vod['thumbnail_url'] for phrase in live_phrases)
-                        status = VodStatus.LIVE if is_live else VodStatus.PENDING
-                        
-                        cursor = await db.execute("SELECT status FROM vods WHERE id = ?", (vod['id'],))
-                        existing = await cursor.fetchone()
-                        
-                        if existing and existing['status'] in (VodStatus.COMPLETED.value, VodStatus.FAILED.value):
-                            continue
-                        
-                        if not existing:
-                            await db.execute('''
-                                INSERT INTO vods 
-                                (id, title, created_at, duration, duration_str, status)
-                                VALUES (?, ?, ?, ?, ?, ?)
-                            ''', (
-                                vod['id'],
-                                vod['title'],
-                                vod['created_at'],
-                                duration_seconds,
-                                duration_str,
-                                status.value
-                            ))
-                            new_vods += 1
-                            logger.info(f"Nuovo VOD trovato: {vod['id']} - Status: {status.value}")
-                        else:
-                            if existing['status'] == VodStatus.LIVE.value and not is_live:
-                                await db.execute('''
-                                    UPDATE vods 
-                                    SET status = ?, duration = ?, duration_str = ?
-                                    WHERE id = ?
-                                ''', (VodStatus.PENDING.value, duration_seconds, duration_str, vod['id']))
-                                logger.info(f"VOD {vod['id']} ora disponibile, aggiornato a pending")
-                            elif existing['status'] != status.value:
-                                await db.execute('''
-                                    UPDATE vods 
-                                    SET status = ?, duration = ?, duration_str = ?
-                                    WHERE id = ?
-                                ''', (status.value, duration_seconds, duration_str, vod['id']))
-                                logger.info(f"Aggiornato VOD {vod['id']} status a {status.value}")
-                    
-                    await db.commit()
+                db = await aiosqlite.connect(config["DATABASE_NAME"])
+                db.row_factory = aiosqlite.Row
                 
+                for vod in data['data']:
+                    duration_str = vod.get("duration", "0s")
+                    duration_seconds = parse_duration(duration_str)
+                    
+                    is_live = any(phrase in vod['thumbnail_url'] for phrase in live_phrases)
+                    status = VodStatus.LIVE if is_live else VodStatus.PENDING
+                    
+                    cursor = await db.execute("SELECT status FROM vods WHERE id = ?", (vod['id'],))
+                    existing = await cursor.fetchone()
+                    
+                    if existing and existing['status'] in (VodStatus.COMPLETED.value, VodStatus.FAILED.value):
+                        continue
+                    
+                    if not existing:
+                        await db.execute('''
+                            INSERT INTO vods 
+                            (id, title, created_at, duration, duration_str, status)
+                            VALUES (?, ?, ?, ?, ?, ?)
+                        ''', (
+                            vod['id'],
+                            vod['title'],
+                            vod['created_at'],
+                            duration_seconds,
+                            duration_str,
+                            status.value
+                        ))
+                        new_vods += 1
+                        logger.info(f"Nuovo VOD trovato: {vod['id']} - Status: {status.value}")
+                    else:
+                        if existing['status'] == VodStatus.LIVE.value and not is_live:
+                            await db.execute('''
+                                UPDATE vods 
+                                SET status = ?, duration = ?, duration_str = ?
+                                WHERE id = ?
+                            ''', (VodStatus.PENDING.value, duration_seconds, duration_str, vod['id']))
+                            logger.info(f"VOD {vod['id']} ora disponibile, aggiornato a pending")
+                        elif existing['status'] != status.value:
+                            await db.execute('''
+                                UPDATE vods 
+                                SET status = ?, duration = ?, duration_str = ?
+                                WHERE id = ?
+                            ''', (status.value, duration_seconds, duration_str, vod['id']))
+                            logger.info(f"Aggiornato VOD {vod['id']} status a {status.value}")
+                
+                await db.commit()
                 logger.info(f"Aggiunti {new_vods} nuovi VODs")
     except Exception as e:
         logger.error(f"Errore controllo nuovi VODs: {str(e)}")
+    finally:
+        if db:
+            await db.close()
 
 async def validate_media_file(file_path):
     logger.info(f"Validazione media file: {file_path}")
@@ -536,7 +554,7 @@ async def send_telegram_notification(message):
         await client.send_message(
             config["TELEGRAM_CHANNEL_ID"],
             f"**System Notification**\n{message}",
-            parse_mode='md'
+            parse_mode='html'
         )
     except Exception as e:
         logger.error(f"Invio notifica fallito: {str(e)}")
@@ -613,12 +631,25 @@ def on_rmtree_error(func, path, exc_info):
 def cleanup_temp_files(file_dir):
     """
     Pulizia avanzata delle directory temporanee con:
-    - Gestione ricorsiva dei permessi
-    - Tentativi adattivi
-    - Pulizia atomica
+    - 4 livelli di tentativi
+    - Fallback a comandi di sistema
+    - Gestione permessi rafforzata
     """
-    logger.info(f"Avvio pulizia avanzata per: {file_dir}")
+    logger.info(f"🚨 Avvio pulizia avanzata per: {file_dir}")
     
+    def try_os_cleanup():
+        """Ultimo tentativo con comandi nativi"""
+        logger.warning("Tentativo finale con comandi di sistema...")
+        try:
+            if os.name == 'nt':
+                os.system(f'rmdir /s /q "{file_dir}" 2>NUL')
+            else:
+                os.system(f'rm -rf "{file_dir}" 2>/dev/null')
+            return not os.path.exists(file_dir)
+        except Exception as e:
+            logger.error(f"Fallito cleanup OS: {str(e)}")
+            return False
+
     if not os.path.exists(file_dir):
         logger.warning("Directory inesistente, operazione annullata")
         return True
@@ -629,36 +660,48 @@ def cleanup_temp_files(file_dir):
             for name in dirs + files:
                 path = os.path.join(root, name)
                 try:
-                    if os.name == 'nt':
-                        os.chmod(path, stat.S_IRWXU)
-                    else:
-                        os.chmod(path, 0o777)
+                    os.chmod(path, 0o777)
+                    if os.name == 'nt':  # Permessi speciali per Windows
+                        import stat
+                        os.chmod(path, stat.S_IREAD | stat.S_IWRITE | stat.S_IEXEC)
                 except Exception as e:
                     logger.error(f"Impostazione permessi fallita per {path}: {str(e)}")
 
-    fix_permissions(file_dir)
+    # Fase 2: Tentativo standard con shutil
+    try:
+        fix_permissions(file_dir)
+        shutil.rmtree(file_dir, onexc=on_rmtree_error)
+        logger.info("Pulizia riuscita con shutil")
+        return True
+    except Exception as e:
+        logger.error(f"Fase 1 fallita: {str(e)}")
 
-    # Fase 2: Rimozione adattiva
+    # Fase 3: Tentativo con ritardo esponenziale
     max_retries = 5
     retry_delay = 1.5
-
     for attempt in range(max_retries):
         try:
-            logger.info(f"Tentativo {attempt + 1}/{max_retries}")
+            logger.info(f"Tentativo {attempt + 1}/{max_retries} con backoff")
+            fix_permissions(file_dir)
             shutil.rmtree(file_dir, onexc=on_rmtree_error)
-            break  # Uscita anticipata se successo
+            logger.info("Pulizia riuscita dopo retry")
+            return True
         except Exception as e:
             logger.warning(f"Tentativo {attempt + 1} fallito: {str(e)}")
-            fix_permissions(file_dir)  # Ripristina permessi
             time.sleep(retry_delay)
-            retry_delay *= 2.5  # Backoff esponenziale
+            retry_delay *= 2.5
 
-    # Verifica incrociata
+    # Fase 4: Fallback a comandi di sistema
+    if try_os_cleanup():
+        logger.info("Pulizia riuscita con comandi OS")
+        return True
+
+    # Verifica finale
     if os.path.exists(file_dir):
         logger.critical(f"Directory residua: {file_dir}")
         logger.critical("Contenuto finale: " + str(os.listdir(file_dir)))
         return False
-    
+
     logger.info("Pulizia completata con successo")
     return True
 
@@ -791,28 +834,57 @@ async def download_vod(vod, token_manager):
         await log_operation(vod['id'], 'download', 'error', str(e))
         raise
     finally:
-        if original_sigint is not None:
-            signal.signal(signal.SIGINT, original_sigint)
-        if original_sigterm is not None:
-            signal.signal(signal.SIGTERM, original_sigterm)
         if not download_success:
             logger.info("Avvio pulizia finale a causa di errore nel download...")
             try:
-                cleanup_temp_files(vod_dir)
-                logger.info("Pulizia completata")
+                if os.path.exists(vod_dir):
+                    cleanup_temp_files(vod_dir)  # Forza la cancellazione
             except Exception as cleanup_error:
                 logger.error(f"Errore durante la pulizia: {cleanup_error}")
 
 async def handle_vod_error(vod, error):
     vod_id = vod['id']
+    vod_dir = os.path.join(TEMP_ROOT, vod_id)
     logger.error(f"Errore elaborazione VOD {vod_id}: {str(error)}", exc_info=True)
-    # Aggiorno lo stato a pending (con incremento tentativi)
-    await update_vod_status(vod_id, VodStatus.PENDING.value, increment_retries=True)
-    max_retries = 10
-    # Se i retry raggiungono il massimo, imposta a FAILED
-    if vod['retries'] + 1 >= max_retries:
-        logger.critical(f"Raggiunto massimo tentativi per VOD {vod_id}")
-        await handle_failed_vod(vod_id)
+    
+    max_retries = config["VOD_SETTINGS"].get("MAX_RETRIES", 5)
+    try:
+        # Aggiornamento stato con tentativi
+        await update_vod_status(vod_id, VodStatus.PENDING.value, increment_retries=True)
+        
+        # Pulizia avanzata con 3 tentativi
+        cleanup_success = False
+        for attempt in range(1, 4):
+            try:
+                logger.info(f"Tentativo pulizia {attempt}/3 per {vod_dir}")
+                if await cleanup_vod(vod_id, vod_dir):
+                    cleanup_success = True
+                    break
+                await asyncio.sleep(2 ** attempt)  # Backoff esponenziale
+            except Exception as ce:
+                logger.error(f"Fallito tentativo pulizia {attempt}: {str(ce)}")
+
+        if not cleanup_success:
+            logger.critical(f"Fallita pulizia dopo 3 tentativi, forzo rimozione")
+            if os.path.exists(vod_dir):
+                if os.name == 'nt':
+                    os.system(f'rmdir /s /q "{vod_dir}"')
+                else:
+                    os.system(f'rm -rf "{vod_dir}"')
+
+        # Notifica critica dopo massimo tentativi
+        if vod['retries'] + 1 >= max_retries:
+            logger.critical(f"Raggiunto massimo tentativi per VOD {vod_id}")
+            await send_telegram_notification(
+                f"⚠️ VOD {vod_id} FALLITO DEFINITIVAMENTE\n"
+                f"Motivo: {str(error)}\n"
+                f"Retries: {vod['retries'] + 1}"
+            )
+            await update_vod_status(vod_id, VodStatus.FAILED.value)
+            
+    except Exception as critical_error:
+        logger.critical(f"ERRORE CRITICO IN ERROR HANDLER: {str(critical_error)}", exc_info=True)
+        raise
 
 async def cleanup_vod(vod_id, vod_dir):
     """Utilizza la stessa logica robusta di cleanup_temp_files"""
@@ -998,11 +1070,12 @@ async def fix_metadata(input_file):
         await asyncio.wait_for(monitor_progress(), timeout=7200)
     except asyncio.TimeoutError:
         logger.error("Timeout superato (2 ore)")
-        proc.kill()
-        await proc.wait()
         if os.path.exists(temp_file):
             os.remove(temp_file)
-        raise RuntimeError("Timeout di elaborazione")
+        raise
+    finally:
+        if os.path.exists(temp_file) and proc.returncode != 0:
+            os.remove(temp_file)  # Rimuovi residui
 
     # Controllo finale del returncode
     if proc.returncode != 0:
@@ -1449,8 +1522,10 @@ async def split_video(input_path):
                 return ("success", out_file, actual_duration)
 
         except Exception as e:
-            if os.path.exists(out_file):
-                os.remove(out_file)
+            # Elimina tutti i segmenti creati finora
+            for seg in segments:
+                if os.path.exists(seg):
+                    os.remove(seg)
             raise
         finally:
             await progress_manager.close_bar(bar_id)
