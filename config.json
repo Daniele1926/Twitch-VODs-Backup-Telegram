@@ -29,7 +29,7 @@
     },
     "VOD_ORDERING": {
         "field": "created_at",
-        "order": "desc"
+        "order": "asc"
     },
     "Commenti": {
         "User Auth Token": "Auth token preso dai cookie di Twitch da un profilo abbonato o con accesso ai VOD",
