@@ -751,7 +751,7 @@ async def download_vod(vod, token_manager):
                 'Authorization': auth_header,
                 'Client-ID': config["TWITCH_CLIENT_ID"]
             },
-            'concurrent_fragment_downloads': 10,
+            'concurrent_fragment_downloads': 25,
             'break_on_reject': False,
             'quiet': True,
             'ratelimit': config["VOD_SETTINGS"].get("DOWNLOAD_RATELIMIT", 10000000),
@@ -1623,7 +1623,6 @@ async def split_video(input_path):
 # -------------------------------------------------------------------------------
 
 async def upload_segment(segment, vod, part_number, total_parts):
-    bar_id = f"upload_{part_number}"
     thumbnail_path = None
     try:
         # --- Controllo del moov atom e correzione metadata ---
@@ -1696,25 +1695,13 @@ async def upload_segment(segment, vod, part_number, total_parts):
                     raise RuntimeError(f"Connessione fallita dopo {max_attempts} tentativi: {str(e)}")
                 logger.warning(f"Tentativo connessione {attempt+1}/{max_attempts} fallito, riprovo...")
 
-        # --- Upload con gestione avanzata del progresso ---
-        file_size = os.path.getsize(segment)
-        await progress_manager.create_bar(bar_id, f"Upload {part_number}/{total_parts}", file_size, 'B')
-        last_progress_update = 0
-        def progress_callback(uploaded_bytes, total_bytes):
-            nonlocal last_progress_update
-            now = time.time()
-            if now - last_progress_update > 0.3:  # Aggiorna ogni 300ms
-                asyncio.create_task(progress_manager.update_bar(bar_id, uploaded_bytes))
-                last_progress_update = now
-
-        # --- Upload file rispettando il limite fisso del chunk size ---
-        # Telegram impone che ogni parte sia di 512 KB (l'ultima parte può essere più piccola)
-        chunk_size = 512  # in KB (fisso)
-        file = await client.upload_file(
+        # --- Upload utilizzando fast_upload ---
+        logger.info(f"Inizio upload parte {part_number}/{total_parts}")
+        file = await fast_upload(
+            client,
             segment,
-            progress_callback=progress_callback,
-            part_size_kb=chunk_size,
-            file_size=file_size
+            reply=None,
+            name=os.path.basename(segment)
         )
 
         # --- Invio del file su Telegram ---
@@ -1739,11 +1726,9 @@ async def upload_segment(segment, vod, part_number, total_parts):
             background=False
         )
 
-        await progress_manager.close_bar(bar_id)
         logger.info(f"Parte {part_number}/{total_parts} caricata correttamente")
         
     except Exception as e:
-        await progress_manager.close_bar(bar_id)
         logger.error(f"Errore upload parte {part_number}: {str(e)}", exc_info=True)
         await log_operation(vod['id'], 'upload', 'failed', f"Part {part_number}: {str(e)}")
         raise
