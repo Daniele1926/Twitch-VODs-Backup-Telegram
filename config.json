@@ -3,11 +3,21 @@
     "TWITCH_CLIENT_SECRET": "TWITCHBOTCLIENTSECRET",
     "TWITCH_CHANNEL_ID": "TWITCHTARGETCHANNELID",
     "USER_AUTH_TOKEN": "TOKENTWITCH",
-    "TELEGRAM_CHANNEL_ID": "TELEGRAMCHANNELID(STARTS WITH -100)",
     "TELEGRAM_API_ID": "USERBOTAPIID",
     "TELEGRAM_API_HASH": "USERBOTAPIHASH",
     "TELEGRAM_PHONE_NUMBER": "YOURTELEGRAMPHONE",
     "DATABASE_NAME": "vods.db",
+
+    "TELEGRAM_CHANNELS": [
+        {
+            "id": "YOURMAINCHANNEL(starts with -100)",
+            "name": "NAMEFORMAINCHANNEL"
+        },
+        {
+            "id": "YOURBACKUPCHANNEL(can be empty and you can add 3-4-5 channel and more)",
+            "name": "BACKUPCHANNEL"
+        }
+    ],
 
     "VOD_SETTINGS": {
     "MIN_RETRY_DELAY": 300,
