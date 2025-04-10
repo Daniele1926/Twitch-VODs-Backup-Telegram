@@ -1659,7 +1659,6 @@ async def upload_segment(segment, vod, part_number, total_parts):
         required_metadata = ['duration', 'width', 'height', 'bit_rate']
         if not all(key in metadata for key in required_metadata):
             raise ValueError("Metadati video incompleti")
-            
         if metadata['duration'] < 1:
             raise ValueError(f"Durata video non valida: {metadata['duration']}s")
 
@@ -1668,72 +1667,94 @@ async def upload_segment(segment, vod, part_number, total_parts):
         if not os.path.exists(thumbnail_path):
             raise FileNotFoundError("Thumbnail non generata correttamente")
 
-        # --- Configurazione della connessione ---
-        channel_id = int(config["TELEGRAM_CHANNEL_ID"])
+        # --- Costruzione della caption ---
         try:
             created_at = datetime.fromisoformat(vod['created_at'].replace('Z', ''))
             formatted_date = created_at.strftime("%d/%m/%Y")
         except (KeyError, ValueError, TypeError) as e:
             logger.error(f"Errore formattazione data: {str(e)}")
             formatted_date = "Data non disponibile"
-        
         caption = f"{vod['title']} ({formatted_date}) - Part {part_number}/{total_parts}"
         logger.info(f"Caption per Telegram: {caption}")
-
-        # Connessione robusta con backoff
-        max_attempts = 3
-        for attempt in range(max_attempts):
-            try:
-                if not client.is_connected():
-                    await client.connect()
-                    await asyncio.sleep(2 ** attempt)  # Backoff esponenziale
-                await client.get_me()
-                channel = await client.get_entity(channel_id)
-                break
-            except Exception as e:
-                if attempt == max_attempts - 1:
-                    raise RuntimeError(f"Connessione fallita dopo {max_attempts} tentativi: {str(e)}")
-                logger.warning(f"Tentativo connessione {attempt+1}/{max_attempts} fallito, riprovo...")
-
-        # --- Upload utilizzando fast_upload ---
         logger.info(f"Inizio upload parte {part_number}/{total_parts}")
-        file = await fast_upload(
+        # --- Preparazione upload preliminare ---
+        file_handle = await fast_upload(
             client,
             segment,
             reply=None,
             name=os.path.basename(segment)
         )
-
-        # --- Invio del file su Telegram ---
-        await client.send_file(
-            channel,
-            file,
-            caption=caption[:1024],  # Limita la caption a 1024 caratteri
-            thumb=thumbnail_path,
-            attributes=[
-                DocumentAttributeVideo(
-                    duration=int(metadata['duration']),
-                    w=metadata['width'],
-                    h=metadata['height'],
-                    supports_streaming=True  # Abilita lo streaming
-                )
-            ],
-            mime_type='video/mp4',
-            parse_mode='html',
-            part_count=total_parts,
-            force_document=False,  # Importante per lo streaming
-            allow_cache=False,
-            background=False
-        )
-
-        logger.info(f"Parte {part_number}/{total_parts} caricata correttamente")
         
+        # --- Gestione upload su più canali ---
+        channels = config.get("TELEGRAM_CHANNELS", [])
+        if not channels:
+            logger.warning("Nessun canale configurato in TELEGRAM_CHANNELS")
+            return
+
+        uploaded_channels = 0
+        for channel_info in channels:
+            channel_name = "Canale sconosciuto"
+            try:
+                if "id" not in channel_info or "name" not in channel_info:
+                    logger.warning(f"Configurazione canale non valida: {channel_info}")
+                    continue
+
+                channel_id = int(channel_info["id"])
+                channel_name = channel_info["name"]
+                max_attempts = 3
+                for attempt in range(max_attempts):
+                    try:
+                        if not client.is_connected():
+                            await client.connect()
+                            await asyncio.sleep(2 ** attempt)
+                        await client.get_me()
+                        channel = await client.get_entity(channel_id)
+                        break
+                    except Exception as e:
+                        if attempt == max_attempts - 1:
+                            raise RuntimeError(f"Connessione fallita per {channel_name} dopo {max_attempts} tentativi: {str(e)}")
+                        logger.warning(f"Tentativo connessione {attempt+1}/{max_attempts} per {channel_name} fallito, riprovo...")
+                        await asyncio.sleep(2 ** attempt)
+
+                await client.send_file(
+                    channel,
+                    file_handle,
+                    caption=caption[:1024],
+                    thumb=thumbnail_path,
+                    attributes=[
+                        DocumentAttributeVideo(
+                            duration=int(metadata['duration']),
+                            w=metadata['width'],
+                            h=metadata['height'],
+                            supports_streaming=True
+                        )
+                    ],
+                    mime_type='video/mp4',
+                    parse_mode='html',
+                    part_count=total_parts,
+                    force_document=False,
+                    allow_cache=False,
+                    background=False
+                )
+                uploaded_channels += 1
+                logger.info(f"Invio a {channel_name} completato")
+
+                await asyncio.sleep(config.get("UPLOAD_DELAY_PER_CHANNEL", 3))
+
+            except Exception as e:
+                logger.error(f"Errore invio a {channel_name}: {str(e)}", exc_info=True)
+                await log_operation(vod['id'], 'upload', 'failed', f"Canale {channel_name}: {str(e)}")
+
+        if uploaded_channels == 0:
+            raise RuntimeError("Nessun canale valido per l'upload")
+        logger.info(f"Parte {part_number}/{total_parts} caricata su {uploaded_channels}/{len(channels)} canali")
+
     except Exception as e:
         logger.error(f"Errore upload parte {part_number}: {str(e)}", exc_info=True)
         await log_operation(vod['id'], 'upload', 'failed', f"Part {part_number}: {str(e)}")
         raise
+
     finally:
-        # Pulizia affidabile della thumbnail
         if thumbnail_path and os.path.exists(thumbnail_path):
             try:
                 os.remove(thumbnail_path)
