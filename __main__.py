@@ -88,6 +88,17 @@ class ReloadableConfig:
         self.last_modified = 0
         self.load_sync()
 
+    async def save(self):
+        """Salva la configurazione su file in modo asincrono"""
+        try:
+            async with aiofiles.open(self.path, 'w', encoding='utf-8') as f:
+                await f.write(json.dumps(self.config, indent=4))
+            self.last_modified = os.path.getmtime(self.path)
+            logger.info("Configurazione salvata con successo")
+        except Exception as e:
+            logger.error(f"Errore durante il salvataggio: {str(e)}")
+            raise
+
     def load_sync(self):
         try:
             with open(self.path, 'r', encoding='utf-8') as f:
@@ -120,6 +131,131 @@ class ReloadableConfig:
     def get(self, key, default=None):
         return self.config.get(key, default)
 
+class TwitchUserTokenManager:
+    def __init__(self, config):
+        self.config = config
+        self.token = self.config.get("USER_AUTH_TOKEN", "")
+        self.refresh_token = self.config.get("USER_REFRESH_TOKEN", "")
+        self.client_id = config["TWITCH_CLIENT_ID"]
+        self.client_secret = config["TWITCH_CLIENT_SECRET"]
+        self.expires_at = None
+
+    async def validate_token(self):
+        """Verifica se il token utente è valido"""
+        if not self.token:
+            return False
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                headers = {"Authorization": f"Bearer {self.token.replace('oauth:', '')}"}
+                async with session.get(
+                    "https://id.twitch.tv/oauth2/validate", 
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=5)
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        self.expires_at = time.time() + data['expires_in']
+                        return True
+                    return False
+        except Exception as e:
+            logger.error(f"Errore validazione token: {str(e)}")
+            return False
+
+    async def get_valid_token(self):
+        """Restituisce un token valido con fallback intelligente"""
+        # Prima verifica lo user token
+        if await self.validate_token():
+            return self.token
+        
+        # Tentativo di refresh se disponibile
+        logger.warning("Token non valido, tentativo di refresh...")
+        if await self.refresh_user_token():
+            return self.token
+            
+        # Fallback all'app token
+        logger.info("Fallback a app token")
+        try:
+            app_token = await TwitchTokenManager().get_valid_token()
+            return f"Bearer {app_token}"
+        except Exception as e:
+            logger.critical("Fallito anche il fallback all'app token")
+            raise
+
+    async def refresh_user_token(self):
+        """Ottiene e salva un nuovo token usando il refresh token"""
+        logger.info("Tentativo di refresh automatico dello user token...")
+        
+        if not self.refresh_token:
+            logger.error("Nessun refresh token disponibile per il rinnovo")
+            await send_telegram_notification("⚠️ ERRORE TOKEN: Manca il refresh token per il rinnovo automatico")
+            return False
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                params = {
+                    "client_id": self.client_id,
+                    "client_secret": self.client_secret,
+                    "grant_type": "refresh_token",
+                    "refresh_token": self.refresh_token
+                }
+
+                async with session.post(
+                    "https://id.twitch.tv/oauth2/token",
+                    params=params,
+                    timeout=aiohttp.ClientTimeout(total=10)
+                ) as resp:
+                    if resp.status != 200:
+                        error = await resp.text()
+                        logger.error(f"Errore HTTP {resp.status} durante il refresh: {error}")
+                        return False
+
+                    data = await resp.json()
+                    
+                    if 'access_token' not in data or 'expires_in' not in data:
+                        logger.error("Risposta API non valida: %s", data)
+                        return False
+
+                    # Aggiorna i valori in memoria
+                    self.token = data['access_token']
+                    new_refresh_token = data.get('refresh_token', self.refresh_token)
+                    
+                    # Verifica integrità refresh token
+                    if new_refresh_token == self.refresh_token:
+                        logger.warning("Nuovo refresh token non fornito, mantengo quello vecchio")
+                    else:
+                        self.refresh_token = new_refresh_token
+
+                    self.expires_at = time.time() + data['expires_in']
+
+                    # Aggiorna la configurazione
+                    self.config.config.update({
+                        "USER_AUTH_TOKEN": self.token,
+                        "USER_REFRESH_TOKEN": self.refresh_token
+                    })
+
+                    # Salva su file in modo atomico
+                    try:
+                        await self.config.save()
+                        logger.info("Nuovi token salvati nel config.json")
+                        await send_telegram_notification("🔄 Token utente aggiornati con successo!")
+                    except Exception as save_error:
+                        logger.critical(f"Errore salvataggio token: {str(save_error)}")
+                        await send_telegram_notification("🔥 ERRORE CRITICO: Impossibile salvare i nuovi token!")
+                        return False
+
+                    return True
+
+        except aiohttp.ClientError as e:
+            logger.error(f"Errore di connessione durante il refresh: {str(e)}")
+        except json.JSONDecodeError as e:
+            logger.error(f"Errore decodifica risposta JSON: {str(e)}")
+        except Exception as e:
+            logger.error(f"Errore generico durante il refresh: {str(e)}")
+        
+        await send_telegram_notification("⚠️ ERRORE: Fallito refresh automatico token. Verifica i log!")
+        return False
+    
 class TwitchTokenManager:
     def __init__(self):
         self.token = None
@@ -155,6 +291,7 @@ class TwitchTokenManager:
 try:
     config = ReloadableConfig("config.json")
     token_manager = TwitchTokenManager()
+    user_token_manager = TwitchUserTokenManager(config)
 except Exception as e:
     logger.critical(f"Errore di configurazione: {e}")
     sys.exit(1)
@@ -706,42 +843,26 @@ def cleanup_temp_files(file_dir):
     return True
 
 # --- Download, split, upload e gestione errori ---
-async def download_vod(vod, token_manager):
+async def download_vod(vod, token_manager, user_token_manager):
     logger.info(f"Avvio download per VOD {vod['id']} - {vod['title']}")
     vod_dir = os.path.join(TEMP_ROOT, vod['id'])
     os.makedirs(vod_dir, exist_ok=True)
     filename = os.path.join(vod_dir, f"{vod['id']}.mp4")
 
-    original_sigint = original_sigterm = None
-    download_success = False
-    using_user_token = False
-
-    def handle_signal(signal_num, frame):
-        try:
-            logger.warning("Segnale interrupt ricevuto! Pulisco...")
-            kill_child_processes()  # Aggiungi questa linea
-            cleanup_temp_files(vod_dir)
-        except Exception as e:
-            logger.critical(f"CRITICAL ERROR IN SIGNAL HANDLER: {str(e)}")
-        finally:
-            sys.exit(1)
-
     try:
-        original_sigint = signal.signal(signal.SIGINT, handle_signal)
-        original_sigterm = signal.signal(signal.SIGTERM, handle_signal)
-
-        # Costruzione header di autenticazione
-        user_auth_token = config.get("USER_AUTH_TOKEN")
+        # Tentativo con user token
+        user_token = await user_token_manager.get_valid_token()
         auth_header = None
-        if user_auth_token:
-            user_auth_token = user_auth_token.replace('oauth:', '', 1)  # Rimuove prefisso legacy se presente
-            auth_header = f'Bearer {user_auth_token}'
+        using_user_token = False
+
+        if user_token:
+            auth_header = f'Bearer {user_token.replace("oauth:", "")}'
             using_user_token = True
-            logger.info("Utilizzo user token per l'autenticazione")
+            logger.info("Autenticazione con user token")
         else:
+            logger.info("Fallback a app token")
             app_token = await token_manager.get_valid_token()
             auth_header = f'Bearer {app_token}'
-            logger.info("Utilizzo app token per l'autenticazione")
 
         ydl_opts = {
             'cookiefile': 'cookies.txt',
@@ -761,7 +882,6 @@ async def download_vod(vod, token_manager):
             'fragment_retries': 100,
             'hls_use_mpegts': True
         }
-
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             logger.info("Fetching video metadata...")
             meta_info = await asyncio.to_thread(
@@ -814,16 +934,14 @@ async def download_vod(vod, token_manager):
 
     except yt_dlp.DownloadError as e:
         error_msg = str(e)
-        logger.error(f"Download fallito per VOD {vod['id']}: {error_msg}")
-        if '401' in error_msg or 'Unauthorized' in error_msg:
+        if '403' in error_msg or 'Unauthorized' in error_msg:
             if using_user_token:
-                logger.error("User token non valido o scaduto. Verifica il token in config.json.")
-                await log_operation(vod['id'], 'download', 'failed', "Invalid or expired user token")
-            else:
-                logger.error("Accesso negato. Il VOD potrebbe essere disponibile solo per abbonati. Utilizza un user token in config.json.")
-                await log_operation(vod['id'], 'download', 'failed', "Subscriber-only VOD requires user auth")
-        else:
-            await log_operation(vod['id'], 'download', 'failed', error_msg)
+                logger.error("Errore autenticazione, tentativo di refresh...")
+                if await user_token_manager.refresh_user_token():
+                    return await download_vod(vod, token_manager, user_token_manager)
+                else:
+                    logger.error("Fallito refresh, riprovo con app token...")
+                    return await download_vod(vod, token_manager, user_token_manager)
         raise
     except (KeyboardInterrupt, asyncio.CancelledError):
         logger.warning("Download interrotto! Avvio pulizia...")
@@ -1792,7 +1910,7 @@ async def main_loop():
                     await update_vod_status(vod_id, VodStatus.PROCESSING.value, increment_retries=False)
                     try:
                         await log_operation(vod_id, 'process', 'started')
-                        file_path = await download_vod(vod, token_manager)
+                        file_path = await download_vod(vod, token_manager, user_token_manager)
                         segments = await split_video(file_path)
                         total_parts = len(segments)
                         
