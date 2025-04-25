@@ -188,7 +188,6 @@ class TwitchUserTokenManager:
         
         if not self.refresh_token:
             logger.error("Nessun refresh token disponibile per il rinnovo")
-            await send_telegram_notification("⚠️ ERRORE TOKEN: Manca il refresh token per il rinnovo automatico")
             return False
 
         try:
@@ -238,7 +237,6 @@ class TwitchUserTokenManager:
                     try:
                         await self.config.save()
                         logger.info("Nuovi token salvati nel config.json")
-                        await send_telegram_notification("🔄 Token utente aggiornati con successo!")
                     except Exception as save_error:
                         logger.critical(f"Errore salvataggio token: {str(save_error)}")
                         await send_telegram_notification("🔥 ERRORE CRITICO: Impossibile salvare i nuovi token!")
@@ -689,7 +687,7 @@ async def send_telegram_notification(message):
     logger.info(f"Invio notifica Telegram: {message}")
     try:
         await client.send_message(
-            config["TELEGRAM_CHANNEL_ID"],
+            config["TELEGRAM_CHANNELS"],
             f"**System Notification**\n{message}",
             parse_mode='html'
         )
