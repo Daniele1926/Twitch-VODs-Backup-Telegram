@@ -844,6 +844,7 @@ def cleanup_temp_files(file_dir):
 
 # --- Download, split, upload e gestione errori ---
 async def download_vod(vod, token_manager, user_token_manager):
+    download_success = False
     logger.info(f"Avvio download per VOD {vod['id']} - {vod['title']}")
     vod_dir = os.path.join(TEMP_ROOT, vod['id'])
     os.makedirs(vod_dir, exist_ok=True)
