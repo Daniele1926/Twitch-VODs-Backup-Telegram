@@ -152,7 +152,7 @@ The script will start the Telegram client, initialize the database, and begin pe
 
 ---
 
-## 🙏 Crediti
+## 🙏 Credits
 
 Code developed primarily with assistance from **ChatGPT** and **DeepSeek** for generation, refactoring, and testing
 
