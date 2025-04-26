@@ -156,6 +156,13 @@ Lo script avvierà il client Telegram, inizializzerà il database e inizierà il
 
 ---
 
+## 🙏 Crediti
+
+Il codice è stato sviluppato principalmente con l'aiuto di **ChatGPT** e **DeepSeek** per generazione, refactoring e testing
+
+---
+
+
 ## 📄 Licenza
 
 Questo progetto è rilasciato sotto licenza **AGPL-3.0** (GNU Affero General Public License v3.0). 
