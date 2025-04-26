@@ -120,10 +120,6 @@ FastTelethonhelper
 git clone https://github.com/Daniele1926/Twitch-VODs-Backup-Telegram.git
 cd Twitch-VODs-Backup-Telegram
 
-# Crea e attiva un virtualenv
-python3 -m venv .venv
-source .venv/bin/activate
-
 # Installa le dipendenze
 pip install --upgrade pip
 pip install -r requirements.txt
