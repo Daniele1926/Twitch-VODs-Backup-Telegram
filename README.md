@@ -1,39 +1,166 @@
 # Twitch-VODs-Backup-Telegram
-A complete python bot for continuos backup from Twitch to Telegram channel.
-This code use YT_DLP downloader, SQLite for DB and FFmpeg and FFprobe for merging/split/metadata stuff
-This code can also download sub-only VODs by providing your Twitch cookies in cookies.txt (netscape format)
 
-FEATURES:
+Uno script Python asincrono per scaricare automaticamente i VOD (video on demand) da Twitch e inviarli su canali Telegram in modo continuo.
 
-- Automatic fetch new vods and tracking live vods
-- Automatic download new VODs
-- Support for only subs VODs
-- SQL Database to track failed VODs, completed VODs, currently in live VODs and retries
-- Smart automatic split for VODs larger than 2/4GB (depends on Telegram limits), super fast
-- Telegram super uploading speed by FastTelethonhelper module and cryptg encryption
-- Telegram caption with thumbnail, streaming support, VOD title, date and part
+---
 
-INSTALL
+## 📦 Caratteristiche
 
-1. Download repository
-2. use pip install  ffmpeg ffprobe  aiohttp aiofiles cryptg aiosqlite yt_dlp shutil psutil telethon tqdm (if you are root user, you need to write --break-system-packages at the end)
-3. modify config.json according to the little guide inside (if you have telegram premium you can do 4GB instead of 2GB upload size
-4. if you want to download sub-only vods, you need user auth token and cookies from twitch in netscape format (you can with cookie editor extension)
+- **Verifica e scarica nuovi VOD** da un canale Twitch specificato.
+- **Gestione robusta dei download** con retry esponenziali e token refresh (user/app).
+- **Splitting video** in segmenti di dimensione configurabile, con merge e ottimizzazione finale.
+- **Correzione metadati** (faststart, moov atom) per streaming ottimale.
+- **Upload su Telegram** tramite Telethon, con thumbnail generata automaticamente.
+- **Database SQLite** per tenere traccia dello stato di ogni VOD (`pending`, `processing`, `live`, `completed`, `failed`).
+- **File di log** centralizzato con integrazione `tqdm` per la progress bar.
+- **Configurazione ricaricabile** a caldo senza riavviare lo script.
+
+---
+
+## 🛠️ Requisiti
+
+- Python 3.8+
+- ffmpeg e ffprobe installati e disponibili nel PATH
+- `pip install -r requirements.txt`
+
+**Dipendenze principali**:
+
+```text
+aiohttp
+aiosqlite
+aiofiles
+yt-dlp
+telethon
+tqdm
+psutil
+FastTelethonhelper
+```
+
+---
+
+## ⚙️ Configurazione
+
+```json
+{
+  "TWITCH_CLIENT_ID": "<YOUR_TWITCH_CLIENT_ID>",
+  "TWITCH_CLIENT_SECRET": "<YOUR_TWITCH_CLIENT_SECRET>",
+  "TWITCH_CHANNEL_ID": "<YOUR_TWITCH_CHANNEL_ID>",
+  "USER_AUTH_TOKEN": "<OPTIONAL_USER_OAUTH_TOKEN>",
+  "USER_REFRESH_TOKEN": "<OPTIONAL_REFRESH_TOKEN>",
+  "TELEGRAM_API_ID": "<YOUR_TELEGRAM_API_ID>",
+  "TELEGRAM_API_HASH": "<YOUR_TELEGRAM_API_HASH>",
+  "TELEGRAM_PHONE_NUMBER": "+<YOUR_PHONE_NUMBER>",
+  "DATABASE_NAME": "vods.db",
+
+  "TELEGRAM_CHANNELS": [
+    { "id": "<CHANNEL_ID>", "name": "NomeCanale" },
+    { "id": "<CHANNEL_ID_BACKUP>", "name": "NomeCanaleBackup" }
+  ],
+
+  "VOD_SETTINGS": {
+    "MIN_RETRY_DELAY": 300,
+    "MAX_RETRY_DELAY": 86400,
+    "AUTO_CHECK_VODS": true,
+    "PHRASE_IN_THUMBNAIL_URL": ["404_processing"],
+    "VIDEO_QUALITY_VOD": ["best", "1080p60", "720p30"]
+  },
+
+  "SPLIT_SETTINGS": {
+    "MAX_FILE_SIZE_MB": 2024,
+    "MIN_FILE_SIZE_MB": 1800,
+    "MAX_RETRIES_SPLIT": 10,
+    "MERGE_THRESHOLD_MB": 100,
+    "MID_TARGET_RATIO": 0.50,
+    "UPLOAD_DELAY": 3,
+    "PROCESSING_INTERVAL": 1800,
+    "DROP_SEGMENT_THRESHOLD_SEC": 30.0
+  },
+
+  "VOD_ORDERING": {
+    "field": "created_at",
+    "order": "asc"
+  }
+}
+```
+
+### Commenti di configurazione
+- **TWITCH_CLIENT_ID**: ID dell'app registrata su Twitch Developer
+- **TWITCH_CLIENT_SECRET**: Secret corrispondente al Client ID
+- **TWITCH_CHANNEL_ID**: ID numerico del canale Twitch per cui fare il backup
+- **USER_AUTH_TOKEN**: (Opzionale) Token OAuth di un utente per accesso avanzato
+- **USER_REFRESH_TOKEN**: (Opzionale) Refresh token per rinnovare il token OAuth
+- **TELEGRAM_API_ID**: API ID ottenuto da [my.telegram.org](https://my.telegram.org)
+- **TELEGRAM_API_HASH**: API hash ottenuto da [my.telegram.org](https://my.telegram.org)
+- **TELEGRAM_PHONE_NUMBER**: Numero di telefono associato alla sessione Telegram
+- **DATABASE_NAME**: Nome del file SQLite (es. `vods.db`)
+- **TELEGRAM_CHANNELS**: Array di oggetti con `id` (id del canale che inizia con -) e `name` (descrizione canale)
+- **VOD_SETTINGS.MIN_RETRY_DELAY**: Ritardo minimo (s) tra tentativi di retry
+- **VOD_SETTINGS.MAX_RETRY_DELAY**: Ritardo massimo (s) tra retry esponenziale
+- **VOD_SETTINGS.AUTO_CHECK_VODS**: Flag per abilitare il controllo automatico dei VOD
+- **VOD_SETTINGS.PHRASE_IN_THUMBNAIL_URL**: Array di frasi per identificare VOD in fase di elaborazione
+- **VOD_SETTINGS.VIDEO_QUALITY_VOD**: Lista di formati preferiti (ordine di priorità)
+- **SPLIT_SETTINGS.MAX_FILE_SIZE_MB**: Dimensione massima di ogni segmento (in MB)
+- **SPLIT_SETTINGS.MIN_FILE_SIZE_MB**: Dimensione minima di ogni segmento (in MB)
+- **SPLIT_SETTINGS.MAX_RETRIES_SPLIT**: Numero massimo di tentativi di split
+- **SPLIT_SETTINGS.MERGE_THRESHOLD_MB**: Soglia di dimensione per unire segmenti finali
+- **SPLIT_SETTINGS.MID_TARGET_RATIO**: Rapporto target intermedio tra min e max
+- **SPLIT_SETTINGS.UPLOAD_DELAY**: Attesa (s) tra upload di segmenti consecutivi
+- **SPLIT_SETTINGS.PROCESSING_INTERVAL**: Intervallo (s) per ripetere il ciclo di controllo
+- **SPLIT_SETTINGS.DROP_SEGMENT_THRESHOLD_SEC**: Durata minima (s) per includere l'ultimo segmento
+- **VOD_ORDERING.field**: Campo per ordinare i VOD (`created_at` o `duration`)
+- **VOD_ORDERING.order**: Direzione ordinamento (`asc` o `desc`)
 
 
+---
 
-*RUN*
+## 🚀 Installazione e avvio
 
-WINDOWS: 
+```bash
+# Clona il repository
+git clone https://github.com/Daniele1926/Twitch-VODs-Backup-Telegram.git
+cd Twitch-VODs-Backup-Telegram
 
-- Download FFmpeg and FFprobe .exe, put in the folder and just double click start.bat
+# Crea e attiva un virtualenv
+python3 -m venv .venv
+source .venv/bin/activate
 
+# Installa le dipendenze
+pip install --upgrade pip
+pip install -r requirements.txt
 
-LINUX: 
+# Configura il file config.json
+# (vedi sezione Configurazione)
 
-- Go to directory and launch by python3 __ main __.py
+# Avvia lo script
+python __main__.py
+```
 
+Lo script avvierà il client Telegram, inizializzerà il database e inizierà il controllo periodico dei VOD.
 
+---
 
-DISCLAIMER: 
-- This tool is 99% made by DeepSeek and ChatGPT. I'm not a developer.
+## 📊 Stato e log
+
+- Il database SQLite (`DATABASE_NAME`) contiene le tabelle `vods` e `operations`.
+- I log sono salvati in `bot.log` e mostrati a terminale con barra di progresso.
+- Tutti gli errori critici vengono notificati sui canali Telegram configurati.
+
+---
+
+## 🤝 Contribuire
+
+1. Fork del progetto
+2. Crea un branch (`git checkout -b feature/nome-feature`)
+3. Implementa e committa
+4. Apri una Pull Request
+
+---
+
+## 📄 Licenza
+
+Questo progetto è rilasciato sotto licenza **AGPL-3.0** (GNU Affero General Public License v3.0). 
+
+Ciò significa che chiunque può usare, modificare e ridistribuire questo software, ma **se il codice viene usato per offrire un servizio accessibile via rete (come un bot online)**, allora il codice modificato deve essere a sua volta reso disponibile al pubblico.
+
+Per i dettagli completi: [https://www.gnu.org/licenses/agpl-3.0.html](https://www.gnu.org/licenses/agpl-3.0.html)
+
