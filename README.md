@@ -1,29 +1,29 @@
 # Twitch-VODs-Backup-Telegram
 
-Uno script Python asincrono per scaricare automaticamente i VOD (video on demand) da Twitch e inviarli su canali Telegram in modo continuo.
+An asynchronous Python script to automatically download Twitch VODs (Video On Demand) and continuously upload them to Telegram channels.
 
 ---
 
-## 📦 Caratteristiche
+## 📦 Features
 
-- **Verifica e scarica nuovi VOD** da un canale Twitch specificato.
-- **Gestione robusta dei download** con retry esponenziali e token refresh (user/app).
-- **Splitting video** in segmenti di dimensione configurabile, con merge e ottimizzazione finale.
-- **Correzione metadati** (faststart, moov atom) per streaming ottimale.
-- **Upload su Telegram** tramite Telethon, con thumbnail generata automaticamente.
-- **Database SQLite** per tenere traccia dello stato di ogni VOD (`pending`, `processing`, `live`, `completed`, `failed`).
-- **File di log** centralizzato con integrazione `tqdm` per la progress bar.
-- **Configurazione ricaricabile** a caldo senza riavviare lo script.
+- **Check and download new VODs** from a specified Twitch channel
+- **Robust download management** with exponential backoff retries and token refresh (user/app)
+- **Video splitting** into configurable size segments with final merge and optimization
+- **Metadata correction** (faststart, moov atom) for optimal streaming
+- **Telegram upload** via Telethon with auto-generated thumbnails
+- **SQLite database** to track VOD statuses (`pending`, `processing`, `live`, `completed`, `failed`)
+- **Centralized logging** with `tqdm` progress bar integration
+- **Hot-reloadable configuration** without restarting the script
 
 ---
 
-## 🛠️ Requisiti
+## 🛠️ Requirements
 
 - Python 3.8+
-- ffmpeg e ffprobe installati e disponibili nel PATH
+- ffmpeg and ffprobe installed and available in PATH
 - `pip install -r requirements.txt`
 
-**Dipendenze principali**:
+**Core dependencies**:
 
 ```text
 aiohttp
@@ -38,7 +38,7 @@ FastTelethonhelper
 
 ---
 
-## ⚙️ Configurazione
+## ⚙️ Configuration
 
 ```json
 {
@@ -83,87 +83,87 @@ FastTelethonhelper
 }
 ```
 
-### Commenti di configurazione
-- **TWITCH_CLIENT_ID**: ID dell'app registrata su Twitch Developer
-- **TWITCH_CLIENT_SECRET**: Secret corrispondente al Client ID
-- **TWITCH_CHANNEL_ID**: ID numerico del canale Twitch per cui fare il backup
-- **USER_AUTH_TOKEN**: (Opzionale) Token OAuth di un utente per accesso avanzato
-- **USER_REFRESH_TOKEN**: (Opzionale) Refresh token per rinnovare il token OAuth
-- **TELEGRAM_API_ID**: API ID ottenuto da [my.telegram.org](https://my.telegram.org)
-- **TELEGRAM_API_HASH**: API hash ottenuto da [my.telegram.org](https://my.telegram.org)
-- **TELEGRAM_PHONE_NUMBER**: Numero di telefono associato alla sessione Telegram
-- **DATABASE_NAME**: Nome del file SQLite (es. `vods.db`)
-- **TELEGRAM_CHANNELS**: Array di oggetti con `id` (id del canale che inizia con -) e `name` (descrizione canale)
-- **VOD_SETTINGS.MIN_RETRY_DELAY**: Ritardo minimo (s) tra tentativi di retry
-- **VOD_SETTINGS.MAX_RETRY_DELAY**: Ritardo massimo (s) tra retry esponenziale
-- **VOD_SETTINGS.AUTO_CHECK_VODS**: Flag per abilitare il controllo automatico dei VOD
-- **VOD_SETTINGS.PHRASE_IN_THUMBNAIL_URL**: Array di frasi per identificare VOD in fase di elaborazione
-- **VOD_SETTINGS.VIDEO_QUALITY_VOD**: Lista di formati preferiti (ordine di priorità)
-- **SPLIT_SETTINGS.MAX_FILE_SIZE_MB**: Dimensione massima di ogni segmento (in MB)
-- **SPLIT_SETTINGS.MIN_FILE_SIZE_MB**: Dimensione minima di ogni segmento (in MB)
-- **SPLIT_SETTINGS.MAX_RETRIES_SPLIT**: Numero massimo di tentativi di split
-- **SPLIT_SETTINGS.MERGE_THRESHOLD_MB**: Soglia di dimensione per unire segmenti finali
-- **SPLIT_SETTINGS.MID_TARGET_RATIO**: Rapporto target intermedio tra min e max
-- **SPLIT_SETTINGS.UPLOAD_DELAY**: Attesa (s) tra upload di segmenti consecutivi
-- **SPLIT_SETTINGS.PROCESSING_INTERVAL**: Intervallo (s) per ripetere il ciclo di controllo
-- **SPLIT_SETTINGS.DROP_SEGMENT_THRESHOLD_SEC**: Durata minima (s) per includere l'ultimo segmento
-- **VOD_ORDERING.field**: Campo per ordinare i VOD (`created_at` o `duration`)
-- **VOD_ORDERING.order**: Direzione ordinamento (`asc` o `desc`)
+### Configuration Notes
+- **TWITCH_CLIENT_ID**: Registered app ID from Twitch Developer
+- **TWITCH_CLIENT_SECRET**: Corresponding client secret
+- **TWITCH_CHANNEL_ID**: Numeric ID of the Twitch channel to backup
+- **USER_AUTH_TOKEN**: (Optional) User OAuth token for advanced access
+- **USER_REFRESH_TOKEN**: (Optional) Refresh token for OAuth renewal
+- **TELEGRAM_API_ID**: API ID from [my.telegram.org](https://my.telegram.org)
+- **TELEGRAM_API_HASH**: API hash from [my.telegram.org](https://my.telegram.org)
+- **TELEGRAM_PHONE_NUMBER**: Phone number associated with Telegram session
+- **DATABASE_NAME**: SQLite database filename (e.g., `vods.db`)
+- **TELEGRAM_CHANNELS**: Array of objects with `id` (channel ID starting with -) and `name` (channel description)
+- **VOD_SETTINGS.MIN_RETRY_DELAY**: Minimum retry delay (seconds)
+- **VOD_SETTINGS.MAX_RETRY_DELAY**: Maximum exponential backoff delay (seconds)
+- **VOD_SETTINGS.AUTO_CHECK_VODS**: Flag to enable automatic VOD checking
+- **VOD_SETTINGS.PHRASE_IN_THUMBNAIL_URL**: Array of phrases to identify processing VODs
+- **VOD_SETTINGS.VIDEO_QUALITY_VOD**: Preferred video formats (priority order)
+- **SPLIT_SETTINGS.MAX_FILE_SIZE_MB**: Maximum segment size (MB)
+- **SPLIT_SETTINGS.MIN_FILE_SIZE_MB**: Minimum segment size (MB)
+- **SPLIT_SETTINGS.MAX_RETRIES_SPLIT**: Maximum split attempts
+- **SPLIT_SETTINGS.MERGE_THRESHOLD_MB**: Size threshold to merge final segments
+- **SPLIT_SETTINGS.MID_TARGET_RATIO**: Intermediate target ratio between min/max
+- **SPLIT_SETTINGS.UPLOAD_DELAY**: Delay (seconds) between consecutive uploads
+- **SPLIT_SETTINGS.PROCESSING_INTERVAL**: Interval (seconds) for processing checks
+- **SPLIT_SETTINGS.DROP_SEGMENT_THRESHOLD_SEC**: Minimum duration (seconds) to keep last segment
+- **VOD_ORDERING.field**: Sorting field (`created_at` or `duration`)
+- **VOD_ORDERING.order**: Sorting direction (`asc` or `desc`)
 
 
 ---
 
-## 🚀 Installazione e avvio
+## 🚀 Installation & Setup
 
 ```bash
-# Clona il repository
+# Clone repository
 git clone https://github.com/Daniele1926/Twitch-VODs-Backup-Telegram.git
 cd Twitch-VODs-Backup-Telegram
 
-# Installa le dipendenze
+# Install dependencies
 pip install --upgrade pip
 pip install -r requirements.txt
 
-# Configura il file config.json
-# (vedi sezione Configurazione)
+# Configure config.json
+# (See Configurazion section)
 
-# Avvia lo script
+# Start script
 python __main__.py
 ```
 
-Lo script avvierà il client Telegram, inizializzerà il database e inizierà il controllo periodico dei VOD.
+The script will start the Telegram client, initialize the database, and begin periodic VOD checks.
 
 ---
 
 ## 📊 Stato e log
 
-- Il database SQLite (`DATABASE_NAME`) contiene le tabelle `vods` e `operations`.
-- I log sono salvati in `bot.log` e mostrati a terminale con barra di progresso.
-- Tutti gli errori critici vengono notificati sui canali Telegram configurati.
+- SQL database (`DATABASE_NAME`) contains `vods` and `operations` tables.
+- Logs are saved to 'bot.log' with terminal progress bar display
+- Critical errors are notified to configured Telegram channels
 
 ---
 
-## 🤝 Contribuire
+## 🤝 Contributing
 
-1. Fork del progetto
-2. Crea un branch (`git checkout -b feature/nome-feature`)
-3. Implementa e committa
-4. Apri una Pull Request
+1. Fork the project
+2. Create a branch (`git checkout -b feature/nome-feature`)
+3. Commit your changes 
+4. Open a pull request
 
 ---
 
 ## 🙏 Crediti
 
-Il codice è stato sviluppato principalmente con l'aiuto di **ChatGPT** e **DeepSeek** per generazione, refactoring e testing
+Code developed primarily with assistance from **ChatGPT** and **DeepSeek** for generation, refactoring, and testing
 
 ---
 
 
-## 📄 Licenza
+## 📄 License
 
-Questo progetto è rilasciato sotto licenza **AGPL-3.0** (GNU Affero General Public License v3.0). 
+Released under **AGPL-3.0** (GNU Affero General Public License v3.0). 
 
-Ciò significa che chiunque può usare, modificare e ridistribuire questo software, ma **se il codice viene usato per offrire un servizio accessibile via rete (come un bot online)**, allora il codice modificato deve essere a sua volta reso disponibile al pubblico.
+This means anyone can use, modify, and redistribute this software, but **if used to provide network-accessible services** (e.g., an online bot), modified code must be made publicly available.
 
-Per i dettagli completi: [https://www.gnu.org/licenses/agpl-3.0.html](https://www.gnu.org/licenses/agpl-3.0.html)
+Full details: [https://www.gnu.org/licenses/agpl-3.0.html](https://www.gnu.org/licenses/agpl-3.0.html)
 
