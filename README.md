@@ -146,7 +146,7 @@ The script will start the Telegram client, initialize the database, and begin pe
 ## 🤝 Contributing
 
 1. Fork the project
-2. Create a branch (`git checkout -b feature/nome-feature`)
+2. Create a branch (`git checkout -b feature/feature-name`)
 3. Commit your changes 
 4. Open a pull request
 
