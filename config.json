@@ -1,54 +1,40 @@
 {
-    "TWITCH_CLIENT_ID": "TWITCHBOTCLIENTID",
-    "TWITCH_CLIENT_SECRET": "TWITCHBOTCLIENTSECRET",
-    "TWITCH_CHANNEL_ID": "TWITCHTARGETCHANNELID",
-    "USER_AUTH_TOKEN": "TOKENTWITCH",
-    "TELEGRAM_API_ID": "USERBOTAPIID",
-    "TELEGRAM_API_HASH": "USERBOTAPIHASH",
-    "TELEGRAM_PHONE_NUMBER": "YOURTELEGRAMPHONE",
-    "DATABASE_NAME": "vods.db",
+  "TWITCH_CLIENT_ID": "<YOUR_TWITCH_CLIENT_ID>",
+  "TWITCH_CLIENT_SECRET": "<YOUR_TWITCH_CLIENT_SECRET>",
+  "TWITCH_CHANNEL_ID": "<YOUR_TWITCH_CHANNEL_ID>",
+  "USER_AUTH_TOKEN": "<OPTIONAL_USER_OAUTH_TOKEN>",
+  "USER_REFRESH_TOKEN": "<OPTIONAL_REFRESH_TOKEN>",
+  "TELEGRAM_API_ID": "<YOUR_TELEGRAM_API_ID>",
+  "TELEGRAM_API_HASH": "<YOUR_TELEGRAM_API_HASH>",
+  "TELEGRAM_PHONE_NUMBER": "+<YOUR_PHONE_NUMBER>",
+  "DATABASE_NAME": "vods.db",
 
-    "TELEGRAM_CHANNELS": [
-        {
-            "id": "YOURMAINCHANNEL(starts with -100)",
-            "name": "NAMEFORMAINCHANNEL"
-        },
-        {
-            "id": "YOURBACKUPCHANNEL(can be empty and you can add 3-4-5 channel and more)",
-            "name": "BACKUPCHANNEL"
-        }
-    ],
+  "TELEGRAM_CHANNELS": [
+    { "id": "<CHANNEL_ID>", "name": "NomeCanale" },
+    { "id": "<CHANNEL_ID_BACKUP>", "name": "NomeCanaleBackup" }
+  ],
 
-    "VOD_SETTINGS": {
+  "VOD_SETTINGS": {
     "MIN_RETRY_DELAY": 300,
     "MAX_RETRY_DELAY": 86400,
     "AUTO_CHECK_VODS": true,
-    "PHRASE_IN_THUMBNAIL_URL": "404_processing",
-    "VIDEO_QUALITY_VOD": ["720p30", "720p", "720p60", "1080p", "best"]
-    },
+    "PHRASE_IN_THUMBNAIL_URL": ["404_processing"],
+    "VIDEO_QUALITY_VOD": ["best", "1080p60", "720p30"]
+  },
 
-    "SPLIT_SETTINGS": {
+  "SPLIT_SETTINGS": {
     "MAX_FILE_SIZE_MB": 2048,
-    "MIN_FILE_SIZE_MB": 1900,
-    "MAX_RETRIES_SPLIT": 20,
+    "MIN_FILE_SIZE_MB": 1800,
+    "MAX_RETRIES_SPLIT": 10,
     "MERGE_THRESHOLD_MB": 100,
-    "MID_TARGET_RATIO": 0.5,
+    "MID_TARGET_RATIO": 0.50,
     "UPLOAD_DELAY": 3,
     "PROCESSING_INTERVAL": 1800,
-    "DROP_SEGMENT_THRESHOLD_SEC": 15.0
-    },
-    "VOD_ORDERING": {
-        "field": "created_at",
-        "order": "asc"
-    },
-    "Commenti": {
-        "User Auth Token": "Auth token preso dai cookie di Twitch da un profilo abbonato o con accesso ai VOD",
-        "Max/Min size GB": "Max e min dimensione che devono avere i segmenti prima dell'upload",
-        "Max retries split": "Numero massimo di tentativi di split prima di dare errore",
-        "Merge threshold GB": "Limite massimo a cui tenta di fare il merge tra ultimo e penultimo segmento",
-        "size tolerance": "se per esempio durante lo split hai un valore, in percentuale, poco sopra o sotto delle soglie, lo accetta lo stesso",
-        "processing interval": "ogni quanto tempo deve rifare i check e tutto",
-        "drop_segment_threshold": "secondi minimi che deve avere l'ultimo segmento prima di essere droppato",
-        "vod ordering": "puoi scegliere tra duration o created_at , desc o asc (crescente e decrescente"
-        }
+    "DROP_SEGMENT_THRESHOLD_SEC": 30.0
+  },
+
+  "VOD_ORDERING": {
+    "field": "created_at",
+    "order": "asc"
+  }
 }
