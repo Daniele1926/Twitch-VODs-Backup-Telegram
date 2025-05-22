@@ -670,7 +670,7 @@ This Addendum forms an integral part of the GNU Affero General Public License ve
    c. “Non-Commercial Use” means any use that is not intended for or directed toward commercial advantage or monetary compensation.  
 
 2. RESTRICTION  
-   Notwithstanding anything to the contrary in the AGPL v3.0, Licensee may use, reproduce, modify and distribute the Software **only** for **Non-Commercial Use**. Any direct or indirect commercial exploitation of the Software—including, without limitation, selling, sublicensing, renting, leasing, or otherwise making the Software available for a fee or other consideration—is **strictly prohibited**.
+   Notwithstanding anything to the contrary in the AGPL v3.0, Licensee may use, reproduce, modify and distribute the Software only for Non-Commercial Use. Any direct or indirect commercial exploitation of the Software—including, without limitation, selling, sublicensing, renting, leasing, hosting or otherwise making the Software available as a service or platform (whether for a fee or free of charge, including via advertising, sponsorship, or data-driven monetization)—is strictly prohibited.
 
 3. SHARE-ALIKE & SOURCE AVAILABILITY  
    All other terms of the AGPL v3.0 remain in full force and effect, in particular the obligation that any modified version or derivative work must be licensed under the AGPL v3.0 and made available in source form under the same terms.
